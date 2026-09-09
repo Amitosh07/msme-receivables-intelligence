@@ -82,6 +82,7 @@ ML-Ready Datasets & Manifest (data/processed/)
 - **Phase 2 Engineering Handoff:** [`docs/phase2_handoff.md`](docs/phase2_handoff.md)
 - **Phase 2 Model Training Report:** [`docs/phase2_model_training.md`](docs/phase2_model_training.md)
 - **Model Evaluation Report:** [`docs/model_evaluation.md`](docs/model_evaluation.md)
+- **Phase 3 Backend Foundation Report:** [`docs/phase3_backend_foundation.md`](docs/phase3_backend_foundation.md)
 
 ---
 
@@ -133,7 +134,57 @@ XGBClassifier              XGBRegressor
 
 ---
 
-## 7. Execution Commands
+## 7. Phase 3 — Backend Foundation, Local PostgreSQL & Authentication
+
+### Prerequisites
+- **Python 3.11+**
+- **PostgreSQL 16+** installed locally and running on `localhost:5432`
+- **Node 18+** (for frontend in later phases)
+
+### Local Database Configuration
+- **Database:** `msme_receivables`
+- **Host:** `localhost`
+- **Port:** `5432`
+- **User:** `postgres`
+- **Credentials:** Loaded securely from `.env` via `DATABASE_URL` (never hard-coded or committed).
+
+```env
+DATABASE_URL=postgresql+psycopg://postgres:YOUR_PASSWORD@localhost:5432/msme_receivables
+JWT_SECRET_KEY=replace-with-a-long-random-secret
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+ENVIRONMENT=development
+```
+
+### Core Domain Entities
+- `businesses` — Multi-tenant organization boundary
+- `users` — Authenticated accounts with bcrypt password hashes
+- `memberships` — User-to-business tenant associations with authorization roles (`owner`, `member`)
+- `customers` — Tenant-scoped B2B client accounts
+- `invoices` — Commercial invoices tracking payment and processing statuses independently
+- `payments` — Remittance settlements clearing invoices
+- `invoice_documents` — Uploaded invoice file metadata (PDFs)
+- `prediction_results` — Persisted ML delay risk scores and timing estimates
+- `cashflow_forecasts` — Aggregated cashflow projections with bounds
+- `tasks` — Asynchronous background processing jobs
+
+### Multi-Tenant Isolation
+Tenant context is server-side authoritative, derived solely from JWT verification and database membership resolution. Client-supplied tenant IDs are never trusted.
+
+---
+
+## 8. Execution Commands
+
+### Apply Database Migrations (Alembic):
+```bash
+alembic upgrade head
+```
+
+### Start FastAPI Backend Server:
+```bash
+uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
+```
+Interactive OpenAPI documentation will be accessible at `http://localhost:8000/docs`.
 
 ### Run Phase 1 Feature Pipeline:
 ```bash
@@ -155,7 +206,7 @@ python -m backend.ml.inference.predict --data-dir data/processed --model-dir bac
 python backend/ml/data/audit_dataset.py --input data/dataset.csv --output docs/data_audit_report.md
 ```
 
-### Run Full Test Suite:
+### Run Complete Test Suite (Phases 0, 1, 2, and 3):
 ```bash
 python -m unittest discover -s backend/tests
 ```
