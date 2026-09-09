@@ -8,13 +8,15 @@ from sqlalchemy.orm import Session
 
 from backend.app.models.task import Task
 from backend.app.services.parser import PermanentParserError
-from backend.app.workers.handlers import handle_parse_invoice
+from backend.app.workers.handlers import handle_parse_invoice, handle_predict_invoice
 
 logger = logging.getLogger(__name__)
 
 # Registry of task handlers
 TASK_HANDLERS: Dict[str, Callable[[Session, Task, Dict[str, Any]], None]] = {
     "parse_invoice": handle_parse_invoice,
+    "predict_invoice": handle_predict_invoice,
+    "score_invoice": handle_predict_invoice,
 }
 
 

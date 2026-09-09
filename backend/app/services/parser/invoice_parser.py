@@ -18,10 +18,12 @@ from backend.app.services.parser.pdf_text import extract_text_from_pdf
 logger = logging.getLogger(__name__)
 
 SUPPORTED_CURRENCIES = {
-    "$": "USD",
-    "USD": "USD",
     "₹": "INR",
     "INR": "INR",
+    "RS.": "INR",
+    "RS": "INR",
+    "$": "USD",
+    "USD": "USD",
     "CAD": "CAD",
     "EUR": "EUR",
     "€": "EUR",
@@ -207,15 +209,23 @@ class InvoiceParser:
     def _extract_amount_and_currency(cls, text: str) -> Tuple[Optional[float], str]:
         """Extract total invoice monetary value and billing currency."""
         currency = "USD"
-        for sym, code in SUPPORTED_CURRENCIES.items():
-            if sym in text:
-                currency = code
-                break
+        # 1. Check for explicit currency label first (e.g. "Currency: INR", "Currency: USD")
+        curr_match = re.search(r"(?i)\bcurrency\s*[:\-]?\s*([A-Za-z]{3})\b", text)
+        if curr_match:
+            cand = curr_match.group(1).upper()
+            if cand in ("USD", "INR", "EUR", "GBP", "CAD"):
+                currency = cand
+        else:
+            # Check supported currency symbols/codes in text
+            for sym, code in SUPPORTED_CURRENCIES.items():
+                if sym in text:
+                    currency = code
+                    break
 
         patterns = [
-            r"(?i)(?:total\s*amount|total\s*due|amount\s*due|balance\s*due|grand\s*total|invoice\s*total)\s*[:\-]?\s*(?:[A-Z]{3}|[$₹€£])?\s*([\d,]+(?:\.\d{1,2})?)",
-            r"(?i)(?:USD|CAD|INR|EUR|GBP)\s*([\d,]+(?:\.\d{1,2})?)",
-            r"(?i)\btotal\s*[:\-]?\s*(?:[A-Z]{3}|[$₹€£])?\s*([\d,]+(?:\.\d{1,2})?)",
+            r"(?i)(?:grand\s*total|total\s*amount|total\s*due|amount\s*due|balance\s*due|invoice\s*total|total\s*payable|net\s*payable)\s*[:\-]?\s*[^\d\s\(\)]*\s*(\d[\d,]*(?:\.\d{1,2})?)",
+            r"(?i)(?:USD|CAD|INR|EUR|GBP|RS\.?)\s*(\d[\d,]*(?:\.\d{1,2})?)",
+            r"(?i)\btotal\s*[:\-]?\s*[^\d\s\(\)]*\s*(\d[\d,]*(?:\.\d{1,2})?)",
         ]
         for pattern in patterns:
             match = re.search(pattern, text)
@@ -248,16 +258,30 @@ class InvoiceParser:
         name = None
         ref = None
 
-        cust_name_match = re.search(
-            r"(?i)(?:bill\s*to|sold\s*to|customer|client|invoiced\s*to)\s*[:\-]?\s*([A-Za-z0-9 &.,\-]{2,50})",
+        stop_words = {
+            "date", "invoice", "total", "ship to", "bill to", "details",
+            "tax invoice", "gstin", "payment", "terms", "customer",
+        }
+        for match in re.finditer(
+            r"(?i)(?:bill\s*to|sold\s*to|customer|client|invoiced\s*to)\s*[:\-]?(.*)",
             text,
-        )
-        if cust_name_match:
-            candidate = cust_name_match.group(1).strip()
-            # Clean up linebreaks or trailing addresses
-            candidate = candidate.split("\n")[0].strip()
-            if len(candidate) >= 2 and candidate.lower() not in {"date", "invoice", "total"}:
-                name = candidate
+        ):
+            sub_text = text[match.start():match.start() + 300]
+            lines = [l.strip() for l in sub_text.split("\n")]
+            first_line = re.sub(
+                r"(?i)^(?:bill\s*to|sold\s*to|customer|client|invoiced\s*to)\s*[:\-]?",
+                "",
+                lines[0],
+            ).strip()
+            for cand in [first_line] + lines[1:]:
+                cand_clean = cand.strip()
+                if not cand_clean or cand_clean.lower() in stop_words:
+                    continue
+                if len(cand_clean) >= 2 and re.search(r"[A-Za-z]", cand_clean):
+                    name = cand_clean[:80]
+                    break
+            if name:
+                break
 
         cust_ref_match = re.search(
             r"(?i)(?:customer\s*id|customer\s*no\.?|account\s*no\.?|client\s*id)\s*[:\-]?\s*([A-Za-z0-9\-_]{2,30})",

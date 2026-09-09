@@ -231,6 +231,45 @@ class TestAuthEndpoints(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 401)
 
+    def test_openapi_security_scheme_is_http_bearer(self):
+        """OpenAPI spec documents HTTPBearer (not OAuth2PasswordBearer) matching JSON login contract."""
+        openapi = app.openapi()
+        security_schemes = openapi.get("components", {}).get("securitySchemes", {})
+
+        # Assert HTTPBearer is declared and matches Bearer JWT
+        self.assertIn("HTTPBearer", security_schemes)
+        scheme = security_schemes["HTTPBearer"]
+        self.assertEqual(scheme.get("type"), "http")
+        self.assertEqual(scheme.get("scheme"), "bearer")
+        self.assertEqual(scheme.get("bearerFormat"), "JWT")
+
+        # Assert OAuth2PasswordBearer is removed so Swagger does not attempt password-form login
+        self.assertNotIn("OAuth2PasswordBearer", security_schemes)
+
+    def test_openapi_route_security_enforcement(self):
+        """OpenAPI spec correctly tags protected routes with HTTPBearer and leaves login public."""
+        openapi = app.openapi()
+        paths = openapi.get("paths", {})
+
+        # /auth/login is public
+        login_security = paths.get("/auth/login", {}).get("post", {}).get("security")
+        self.assertIsNone(login_security)
+
+        # Protected routes specify HTTPBearer
+        for protected_path, method in [
+            ("/auth/me", "get"),
+            ("/invoices", "get"),
+            ("/invoices/upload", "post"),
+            ("/payments/import", "post"),
+            ("/predictions", "get"),
+        ]:
+            route_security = paths.get(protected_path, {}).get(method, {}).get("security", [])
+            self.assertEqual(
+                route_security,
+                [{"HTTPBearer": []}],
+                f"Path {method.upper()} {protected_path} should declare HTTPBearer security",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -184,3 +184,63 @@ def handle_parse_invoice(
         "Successfully parsed invoice document %s into invoice %s (%s %s)",
         doc.id, invoice.invoice_number, invoice.currency, invoice.amount,
     )
+
+
+def handle_predict_invoice(
+    db: Session,
+    task: Task,
+    payload: Dict[str, Any],
+) -> None:
+    """
+    Handler for 'predict_invoice' / 'score_invoice' task types.
+    Constructs as-of features strictly at invoice posting date, executes V1 ML inference,
+    and idempotently records the prediction result.
+    """
+    invoice_id_str = payload.get("invoice_id") or (str(task.invoice_id) if task.invoice_id else None)
+    if not invoice_id_str:
+        raise PermanentParserError("Missing 'invoice_id' in task payload.")
+
+    try:
+        invoice_id = uuid.UUID(str(invoice_id_str))
+    except ValueError as e:
+        raise PermanentParserError(f"Invalid UUID for invoice_id: {invoice_id_str}") from e
+
+    # Verify invoice exists and tenant isolation
+    invoice = db.get(Invoice, invoice_id)
+    if not invoice:
+        raise PermanentParserError(f"Invoice {invoice_id} not found in database.")
+
+    if invoice.business_id != task.business_id:
+        raise PermanentParserError(
+            f"Tenant boundary violation: task business {task.business_id} "
+            f"does not match invoice business {invoice.business_id}."
+        )
+
+    from backend.app.services.prediction_service import (
+        InvoiceNotReadyError,
+        PredictionServiceError,
+        predict_for_invoice,
+    )
+
+    try:
+        prediction = predict_for_invoice(
+            db=db,
+            invoice_id=invoice.id,
+            business_id=task.business_id,
+        )
+        task.invoice_id = invoice.id
+        db.commit()
+        logger.info(
+            "Task %s: Successfully scored invoice %s (risk_score=%.4f, tier=%s, days=%.1f)",
+            task.id,
+            invoice.id,
+            prediction.risk_score,
+            prediction.risk_tier,
+            prediction.predicted_days_until_payment,
+        )
+    except (InvoiceNotReadyError, PredictionServiceError) as e:
+        raise PermanentParserError(f"Cannot score invoice {invoice_id}: {e}") from e
+    except Exception as e:
+        logger.error("Error scoring invoice %s: %s", invoice_id, e)
+        raise
+

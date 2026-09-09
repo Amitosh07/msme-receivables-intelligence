@@ -50,6 +50,11 @@ class PredictionResult(Base):
         Numeric(5, 4),
         nullable=False,
     )
+    risk_tier: Mapped[str | None] = mapped_column(
+        String(16),
+        nullable=True,
+        index=True,
+    )
     predicted_days_until_payment: Mapped[float | None] = mapped_column(
         Float,
         nullable=True,

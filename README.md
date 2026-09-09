@@ -202,7 +202,24 @@ ENVIRONMENT=development
 
 ---
 
-## 10. Execution Commands
+## 10. Phase 6 — ML/Application Integration & Risk Scoring
+
+### Core Machine Learning Integration Components
+- **Leakage-Safe As-Of Feature Builder (`build_inference_features`):** Constructs the exact 29-feature schema (`FEATURE_COLUMNS`) required by Phase 2 trained models strictly as-of invoice posting date $T$. Prior customer payment delays and invoice history strictly filter out any events occurring on or after $T$.
+- **Cold-Start Imputation:** New customers ($< 3$ prior invoices) are imputed with frozen training partition medians derived during Phase 1 (`COLD_START_IMPUTATION`), preventing test-time crashes or NaN drift.
+- **V1Predictor Singleton (`get_predictor`):** In-memory cached inference runner executing:
+  - `payment_classifier_v1`: XGBoost binary classifier generating calibrated late payment risk scores $[0.00, 1.00]$, mapped to risk tiers (`LOW`, `MEDIUM`, `HIGH`).
+  - `payment_timing_v1`: XGBoost regressor estimating non-negative days until payment, projecting the calendar `expected_payment_date = invoice_date + round(predicted_days)`.
+- **Database Persistence & Idempotency:** Predictions are persisted into the PostgreSQL `prediction_results` table. Re-scoring an existing invoice updates the existing row rather than generating duplicates.
+- **Single Worker Service Routing:** Extended `TaskRouter` with handlers for `predict_invoice` and `score_invoice` task types, maintaining single-worker architecture with PostgreSQL state management.
+- **REST APIs:**
+  - `POST /invoices/{id}/predict`: Trigger ML prediction for an invoice.
+  - `GET /invoices/{id}/prediction`: Retrieve existing prediction for an invoice with tenant isolation.
+  - `GET /predictions`: List predictions for tenant with pagination and `risk_tier` filtering.
+
+---
+
+## 11. Execution Commands
 
 ### Start Redis Service (Docker Compose):
 ```bash
@@ -225,10 +242,11 @@ Interactive OpenAPI documentation is accessible at `http://localhost:8000/docs`.
 python -m backend.app.workers.runtime
 ```
 
-### Run Complete Test Suite (95 tests across Phases 0, 1, 2, 3, 4, and 5):
+### Run Complete Test Suite (104 tests across Phases 0, 1, 2, 3, 4, 5, and 6):
 ```bash
 python -m unittest discover -s backend/tests -v
 ```
+
 
 
 

@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Generator
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -16,8 +16,13 @@ from backend.app.models.business import Business
 from backend.app.models.membership import Membership
 from backend.app.models.user import User
 
-# OAuth2 scheme for swagger doc authorization header
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=True)
+# HTTP Bearer authentication scheme for OpenAPI / Swagger UI
+http_bearer = HTTPBearer(
+    bearerFormat="JWT",
+    description="Enter your JWT Bearer token",
+    auto_error=True,
+)
+oauth2_scheme = http_bearer  # Retained for backward compatibility
 
 
 @dataclass
@@ -40,7 +45,7 @@ class TenantContext:
 
 
 def get_current_user(
-    token: str = Depends(oauth2_scheme),
+    auth: HTTPAuthorizationCredentials = Depends(http_bearer),
     db: Session = Depends(get_db),
 ) -> User:
     """
@@ -52,6 +57,7 @@ def get_current_user(
         detail="Could not validate authentication credentials.",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    token = auth.credentials
     try:
         payload = decode_access_token(token)
         user_id_str: str | None = payload.get("sub")

@@ -131,6 +131,78 @@ class TestInvoiceParser(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("required", result.error.lower())
 
+    def test_parse_msme_cashflow_invoice_format(self):
+        """
+        Regression test for MSME invoice format containing:
+        - Invoice No: APC/26-27/0147
+        - Invoice Date: 15/07/2026
+        - Grand Total ₹159,241.00
+        - Payment Terms: Net 30
+        - Due Date: 14/08/2026
+        - Currency: INR
+        """
+        invoice_text = (
+            "TAX INVOICE\n"
+            "ARAVIND PRECISION COMPONENTS\n"
+            "Plot 18, Industrial Estate, Peenya Phase II, Bengaluru\n"
+            "Invoice No: APC/26-27/0147\n"
+            "Invoice Date: 15/07/2026\n"
+            "Due Date: 14/08/2026\n"
+            "Payment Terms: Net 30\n"
+            "Currency: INR\n"
+            "BILL TO\n"
+            "SHIP TO\n"
+            "Vardhan Industrial Solutions Pvt. Ltd.\n"
+            "Unit 7, Bommasandra Industrial Area, Bengaluru\n"
+            "Taxable Value\n"
+            "134,950.00\n"
+            "CGST @ 9%\n"
+            "12,145.50\n"
+            "SGST @ 9%\n"
+            "12,145.50\n"
+            "Grand Total ₹159,241.00\n"
+            "Amount in Words: Rupees One Lakh Fifty-Nine Thousand Two Hundred Forty-One Only."
+        )
+        pdf_bytes = _make_pdf(invoice_text)
+        result = InvoiceParser.parse(pdf_bytes)
+
+        self.assertTrue(result.success)
+        self.assertIsNotNone(result.invoice)
+        inv = result.invoice
+        self.assertEqual(inv.invoice_number, "APC/26-27/0147")
+        self.assertEqual(inv.invoice_date, date(2026, 7, 15))
+        self.assertEqual(inv.due_date, date(2026, 8, 14))
+        self.assertEqual(inv.amount, 159241.00)
+        self.assertEqual(inv.currency, "INR")
+        self.assertEqual(inv.payment_terms, "Net 30")
+        self.assertEqual(inv.customer_name, "Vardhan Industrial Solutions Pvt. Ltd.")
+
+    def test_parse_msme_cashflow_invoice_multiline_font_artifact(self):
+        """Regression test for real PDF font glyph artifact where Rupee symbol extracts as 'I' on a newline."""
+        invoice_text = (
+            "TAX INVOICE\n"
+            "Invoice No: APC/26-27/0147\n"
+            "Invoice Date: 15/07/2026\n"
+            "Due Date: 14/08/2026\n"
+            "Payment Terms: Net 30\n"
+            "Currency: INR\n"
+            "BILL TO\n"
+            "Vardhan Industrial Solutions Pvt. Ltd.\n"
+            "Grand Total\n"
+            "I159,241.00\n"
+        )
+        pdf_bytes = _make_pdf(invoice_text)
+        result = InvoiceParser.parse(pdf_bytes)
+
+        self.assertTrue(result.success)
+        self.assertIsNotNone(result.invoice)
+        inv = result.invoice
+        self.assertEqual(inv.invoice_number, "APC/26-27/0147")
+        self.assertEqual(inv.invoice_date, date(2026, 7, 15))
+        self.assertEqual(inv.due_date, date(2026, 8, 14))
+        self.assertEqual(inv.amount, 159241.00)
+        self.assertEqual(inv.currency, "INR")
+
 
 if __name__ == "__main__":
     unittest.main()
