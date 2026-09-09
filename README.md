@@ -80,14 +80,74 @@ ML-Ready Datasets & Manifest (data/processed/)
 - **Phase 1 Pipeline Report:** [`docs/phase1_data_pipeline.md`](docs/phase1_data_pipeline.md)
 - **Feature Dictionary:** [`docs/feature_dictionary.md`](docs/feature_dictionary.md)
 - **Phase 2 Engineering Handoff:** [`docs/phase2_handoff.md`](docs/phase2_handoff.md)
+- **Phase 2 Model Training Report:** [`docs/phase2_model_training.md`](docs/phase2_model_training.md)
+- **Model Evaluation Report:** [`docs/model_evaluation.md`](docs/model_evaluation.md)
 
 ---
 
-## 6. Execution Commands
+## 6. Phase 2 — V1 Payment Prediction Models
+
+### Architecture
+
+```text
+Phase 1 ML-Ready Datasets (data/processed/)
+                ↓
+  ┌─────────────┴─────────────┐
+  │                           │
+XGBClassifier              XGBRegressor
+(is_late target)           (log1p(days_until_payment) target)
+  │                           │
+  ├→ risk_score              ├→ predicted_days_until_payment
+  ├→ is_late_predicted       │
+  ├→ risk_tier (LOW/MED/HI) │
+  │                           │
+  └─────────────┬─────────────┘
+                ↓
+    V1Predictor Inference Module
+    (backend/ml/inference/predict.py)
+                ↓
+    Scored Open Invoices (data/processed/scored_open_invoices.parquet)
+```
+
+### Model Results (Holdout Test Set)
+
+| Model | Metric | XGBoost V1 | Baseline | Δ |
+|:------|:-------|:-----------|:---------|:--|
+| **Classifier** | Accuracy | 0.7909 | 0.7316 | +0.0593 |
+| | F1 | 0.7047 | 0.6192 | +0.0855 |
+| | ROC-AUC | 0.8456 | — | — |
+| | Precision | 0.7984 | 0.7057 | +0.0927 |
+| | Recall | 0.6308 | 0.5515 | +0.0793 |
+| **Timing** | MAE | 2.82 days | 3.41 days | −0.59 |
+| | RMSE | 7.75 | 8.68 | −0.93 |
+| | Median AE | 0.91 | 1.00 | −0.09 |
+
+### Model Artifacts in `backend/ml/models/`
+
+- `payment_classifier_v1.json` — XGBoost binary classifier
+- `payment_timing_v1.json` — XGBoost timing regressor
+- `classifier_encoder_v1.joblib` — Fitted OrdinalEncoder for classifier categoricals
+- `timing_encoder_v1.joblib` — Fitted OrdinalEncoder for timing categoricals
+- `model_metadata.json` — Combined model metadata (features, config, training details)
+- `evaluation_report.json` — Machine-readable evaluation metrics with baselines
+
+---
+
+## 7. Execution Commands
 
 ### Run Phase 1 Feature Pipeline:
 ```bash
 python -m backend.ml.features.build_features --input data/dataset.csv --output-dir data/processed
+```
+
+### Run Phase 2 Model Training:
+```bash
+python -m backend.ml.training.train_all --data-dir data/processed --model-dir backend/ml/models
+```
+
+### Score Open Invoices:
+```bash
+python -m backend.ml.inference.predict --data-dir data/processed --model-dir backend/ml/models
 ```
 
 ### Run Phase 0 Audit:
@@ -99,3 +159,4 @@ python backend/ml/data/audit_dataset.py --input data/dataset.csv --output docs/d
 ```bash
 python -m unittest discover -s backend/tests
 ```
+

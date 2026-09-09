@@ -66,3 +66,4 @@ data/**/*.parquet
 *.joblib
 *.onnx
 ml_models/
+backend/ml/models/
