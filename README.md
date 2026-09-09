@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # MSME Receivables Intelligence Platform — Version 1
 
 An AI/ML-powered receivables intelligence platform that helps B2B MSMEs predict whether outstanding invoices will be paid late, estimate when payments will arrive, and prioritize collection efforts based on risk.
