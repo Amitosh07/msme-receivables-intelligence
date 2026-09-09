@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # Environment
     ENVIRONMENT: str = "development"
 
+    # Storage (Local object-storage abstraction)
+    STORAGE_BACKEND: str = "local"
+    STORAGE_ROOT: str = "./storage"
+    MAX_INVOICE_FILE_SIZE_MB: int = 10
+
     # App Info
     APP_NAME: str = "MSME Receivables Intelligence Platform"
     APP_VERSION: str = "1.0.0"

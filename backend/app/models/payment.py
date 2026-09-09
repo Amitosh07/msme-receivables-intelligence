@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 from sqlalchemy import DateTime, ForeignKey, Numeric, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -36,10 +36,15 @@ class Payment(Base):
         nullable=False,
         index=True,
     )
-    invoice_id: Mapped[uuid.UUID] = mapped_column(
+    invoice_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("invoices.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+        index=True,
+    )
+    invoice_reference: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
         index=True,
     )
     payment_date: Mapped[datetime] = mapped_column(
@@ -62,7 +67,7 @@ class Payment(Base):
 
     # Relationships
     business: Mapped[Business] = relationship("Business", back_populates="payments")
-    invoice: Mapped[Invoice] = relationship("Invoice", back_populates="payments")
+    invoice: Mapped[Optional[Invoice]] = relationship("Invoice", back_populates="payments")
 
     def __repr__(self) -> str:
         return f"<Payment(id={self.id}, invoice_id={self.invoice_id}, amount={self.amount})>"

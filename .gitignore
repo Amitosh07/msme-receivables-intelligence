@@ -67,3 +67,8 @@ data/**/*.parquet
 *.onnx
 ml_models/
 backend/ml/models/
+
+# Document & Object Storage
+storage/
+uploads/
+

@@ -83,6 +83,8 @@ ML-Ready Datasets & Manifest (data/processed/)
 - **Phase 2 Model Training Report:** [`docs/phase2_model_training.md`](docs/phase2_model_training.md)
 - **Model Evaluation Report:** [`docs/model_evaluation.md`](docs/model_evaluation.md)
 - **Phase 3 Backend Foundation Report:** [`docs/phase3_backend_foundation.md`](docs/phase3_backend_foundation.md)
+- **Phase 4 Ingestion Pipeline Report:** [`docs/phase4_ingestion.md`](docs/phase4_ingestion.md)
+- **Phase 5 Engineering Handoff:** [`docs/phase5_handoff.md`](docs/phase5_handoff.md)
 
 ---
 
@@ -168,12 +170,21 @@ ENVIRONMENT=development
 - `cashflow_forecasts` — Aggregated cashflow projections with bounds
 - `tasks` — Asynchronous background processing jobs
 
-### Multi-Tenant Isolation
-Tenant context is server-side authoritative, derived solely from JWT verification and database membership resolution. Client-supplied tenant IDs are never trusted.
+---
+
+## 8. Phase 4 — Invoice & Payment Data Ingestion
+
+### Core Ingestion Components
+- **Invoice PDF Upload (`POST /invoices/upload`):** Accepts `application/pdf` multipart uploads. Performs strict content validation (non-empty, magic bytes `%PDF`, size limits up to `MAX_INVOICE_FILE_SIZE_MB`).
+- **Object Storage Abstraction (`StorageService`):** Provides a clean storage interface decoupled from cloud/local providers. In development, `LocalFileStorage` stores documents under `./storage` with atomic replacement and strict path traversal protection.
+- **Tenant-Scoped Storage Keys:** Files are organized strictly as `tenants/{business_id}/invoices/{document_id}.pdf`. Client-provided filenames are never used as filesystem paths.
+- **Document Metadata & Status:** Persists `InvoiceDocument` records initialized with `processing_status = 'PENDING'`. No synchronous PDF parsing or ML predictions occur in Phase 4.
+- **Payment History CSV Ingestion (`POST /payments/import`):** Normalizes canonical headers (`invoice_number`, `payment_date`, `payment_amount`), parses multi-format dates, validates positive amounts, filters duplicates deterministically, links matching invoices, and safely retains unmatched payment records.
+- **Document & Invoice APIs:** Provides tenant-protected endpoints to list/download documents (`GET /invoices/documents`, `GET /invoices/documents/{id}`) and query invoices (`GET /invoices`, `GET /invoices/{id}`).
 
 ---
 
-## 8. Execution Commands
+## 9. Execution Commands
 
 ### Apply Database Migrations (Alembic):
 ```bash
@@ -186,28 +197,9 @@ uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 Interactive OpenAPI documentation will be accessible at `http://localhost:8000/docs`.
 
-### Run Phase 1 Feature Pipeline:
-```bash
-python -m backend.ml.features.build_features --input data/dataset.csv --output-dir data/processed
-```
-
-### Run Phase 2 Model Training:
-```bash
-python -m backend.ml.training.train_all --data-dir data/processed --model-dir backend/ml/models
-```
-
-### Score Open Invoices:
-```bash
-python -m backend.ml.inference.predict --data-dir data/processed --model-dir backend/ml/models
-```
-
-### Run Phase 0 Audit:
-```bash
-python backend/ml/data/audit_dataset.py --input data/dataset.csv --output docs/data_audit_report.md
-```
-
-### Run Complete Test Suite (Phases 0, 1, 2, and 3):
+### Run Complete Test Suite (Phases 0, 1, 2, 3, and 4):
 ```bash
 python -m unittest discover -s backend/tests
 ```
+
 
