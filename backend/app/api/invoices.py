@@ -53,12 +53,49 @@ async def upload_invoice(
         original_filename=filename,
     )
 
+    # Create asynchronous parsing task in PostgreSQL (authoritative source of truth)
+    from backend.app.services.task_service import create_task
+    from backend.app.workers.queue import get_task_queue
+    import logging
+    _logger = logging.getLogger(__name__)
+
+    task = create_task(
+        db=db,
+        business_id=tenant_ctx.business_id,
+        task_type="parse_invoice",
+        payload={
+            "invoice_document_id": str(doc.id),
+            "business_id": str(tenant_ctx.business_id),
+        },
+    )
+    db.commit()
+
+    # Enqueue task to Redis queue for background worker consumption
+    try:
+        queue = get_task_queue()
+        queue.enqueue(
+            task_id=task.id,
+            task_type="parse_invoice",
+            business_id=tenant_ctx.business_id,
+            payload={
+                "invoice_document_id": str(doc.id),
+                "business_id": str(tenant_ctx.business_id),
+            },
+        )
+    except Exception as e:
+        _logger.warning(
+            "Could not immediately enqueue task %s to Redis: %s. "
+            "Task remains PENDING in PostgreSQL and will be processed via startup recovery.",
+            task.id, e,
+        )
+
     return InvoiceUploadResponse(
         document_id=doc.id,
         invoice_id=doc.invoice_id,
         original_filename=doc.original_filename,
         file_size=doc.file_size,
         processing_status=doc.processing_status,
+        task_id=task.id,
         created_at=doc.created_at,
     )
 

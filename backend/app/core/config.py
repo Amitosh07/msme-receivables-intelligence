@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     STORAGE_ROOT: str = "./storage"
     MAX_INVOICE_FILE_SIZE_MB: int = 10
 
+    # Redis Queue & Worker
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_TASK_QUEUE_NAME: str = "msme_tasks"
+    WORKER_POLL_INTERVAL_SECONDS: float = 1.0
+    MAX_TASK_RETRIES: int = 3
+
     # App Info
     APP_NAME: str = "MSME Receivables Intelligence Platform"
     APP_VERSION: str = "1.0.0"

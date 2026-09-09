@@ -85,6 +85,8 @@ ML-Ready Datasets & Manifest (data/processed/)
 - **Phase 3 Backend Foundation Report:** [`docs/phase3_backend_foundation.md`](docs/phase3_backend_foundation.md)
 - **Phase 4 Ingestion Pipeline Report:** [`docs/phase4_ingestion.md`](docs/phase4_ingestion.md)
 - **Phase 5 Engineering Handoff:** [`docs/phase5_handoff.md`](docs/phase5_handoff.md)
+- **Phase 5 Worker & Parser Report:** [`docs/phase5_worker_and_parser.md`](docs/phase5_worker_and_parser.md)
+- **Phase 6 Engineering Handoff:** [`docs/phase6_handoff.md`](docs/phase6_handoff.md)
 
 ---
 
@@ -184,7 +186,28 @@ ENVIRONMENT=development
 
 ---
 
-## 9. Execution Commands
+---
+
+## 9. Phase 5 — Redis Queue, Single Worker Service & Invoice Parser
+
+### Core Asynchronous Processing Components
+- **Redis Task Queue (`TaskQueue`):** Manages a FIFO queue (`msme:task:queue`) using Redis `LPUSH` / `BRPOP` lists. Stores decoupled task envelopes with message deserialization and connection retry.
+- **PostgreSQL Task Tracking (`Task` Entity):** PostgreSQL serves as the authoritative source of truth. Tasks are created in `PENDING` state and atomically claimed using SQL `RETURNING` queries to prevent race conditions.
+- **Single Worker Service (`WorkerService`):** Background process listening on Redis queue. On startup, recovers all pending tasks from PostgreSQL. Implements graceful shutdown (`SIGINT` / `SIGTERM`), exponential retry handling for transient errors (up to 3 attempts), and immediate marking of permanent errors.
+- **Invoice Parser (`InvoiceParser`):** Two-tier extraction strategy:
+  1. *Text-first extraction:* Fast in-memory layout parsing with PyMuPDF (`fitz`) and `pypdf`.
+  2. *OCR fallback:* Pixmap rendering and OCR extraction via `pytesseract` for scanned/image PDFs.
+  3. *Deterministic extraction & validation:* Regex extraction for invoice numbers, issue dates, commercial payment terms, derived due dates, amounts, and currencies. No fabrication of missing fields.
+- **Reconciliation & Idempotency:** Automatically matches newly parsed invoices against historical unmatched payments (marking them `PAID`), and handles duplicate tasks idempotently.
+
+---
+
+## 10. Execution Commands
+
+### Start Redis Service (Docker Compose):
+```bash
+docker compose up -d redis
+```
 
 ### Apply Database Migrations (Alembic):
 ```bash
@@ -195,11 +218,17 @@ alembic upgrade head
 ```bash
 uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
 ```
-Interactive OpenAPI documentation will be accessible at `http://localhost:8000/docs`.
+Interactive OpenAPI documentation is accessible at `http://localhost:8000/docs`.
 
-### Run Complete Test Suite (Phases 0, 1, 2, 3, and 4):
+### Start Asynchronous Worker Service:
 ```bash
-python -m unittest discover -s backend/tests
+python -m backend.app.workers.runtime
 ```
+
+### Run Complete Test Suite (95 tests across Phases 0, 1, 2, 3, 4, and 5):
+```bash
+python -m unittest discover -s backend/tests -v
+```
+
 
 

@@ -15,6 +15,7 @@ class InvoiceUploadResponse(BaseModel):
     original_filename: str
     file_size: int
     processing_status: str = "PENDING"
+    task_id: Optional[uuid.UUID] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
