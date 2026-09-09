@@ -1,0 +1,284 @@
+{
+  "version": "1.0",
+  "total_features": 29,
+  "numeric_features_count": 26,
+  "categorical_features_count": 3,
+  "feature_list": [
+    "amount",
+    "log_amount",
+    "term_duration_days",
+    "days_until_due_at_posting",
+    "posting_month",
+    "posting_day_of_month",
+    "posting_day_of_week",
+    "posting_quarter",
+    "is_weekend_posting",
+    "due_month",
+    "due_day_of_week",
+    "is_weekend_due",
+    "cust_prior_invoice_count",
+    "cust_prior_payment_count",
+    "cust_prior_late_count",
+    "cust_late_payment_rate",
+    "cust_avg_delay",
+    "cust_median_delay",
+    "cust_std_delay",
+    "cust_max_delay",
+    "cust_min_delay",
+    "cust_recent_avg_delay_3",
+    "cust_recent_late_rate_3",
+    "days_since_last_payment",
+    "days_since_prev_invoice",
+    "is_new_customer",
+    "business_code",
+    "currency",
+    "payment_terms"
+  ],
+  "target_list": [
+    "is_late",
+    "delay_days",
+    "days_until_payment"
+  ],
+  "metadata_columns": [
+    "invoice_id",
+    "business_code",
+    "customer_id",
+    "customer_name",
+    "invoice_date",
+    "due_date",
+    "baseline_date",
+    "clear_date",
+    "status",
+    "split"
+  ],
+  "prohibited_columns": [
+    "clear_date",
+    "isOpen",
+    "delay_days",
+    "is_late",
+    "days_until_payment",
+    "document type",
+    "area_business",
+    "posting_id",
+    "doc_id",
+    "cust_number",
+    "name_customer"
+  ],
+  "imputation_fitted_values": {
+    "cust_late_payment_rate": 0.329609,
+    "cust_avg_delay": 0.170732,
+    "cust_median_delay": 0.0,
+    "cust_std_delay": 4.036694,
+    "cust_max_delay": 15.0,
+    "cust_min_delay": -7.0,
+    "cust_recent_avg_delay_3": 0.0,
+    "cust_recent_late_rate_3": 0.333333,
+    "days_since_last_payment": 2.0,
+    "days_since_prev_invoice": 1.0
+  },
+  "features": [
+    {
+      "feature_name": "amount",
+      "data_type": "numeric_float",
+      "description": "Invoice-intrinsic feature: amount",
+      "as_of_rule": "Available at invoice posting time T",
+      "imputation_strategy": "Directly observed (no nulls)"
+    },
+    {
+      "feature_name": "log_amount",
+      "data_type": "numeric_float",
+      "description": "Invoice-intrinsic feature: log_amount",
+      "as_of_rule": "Available at invoice posting time T",
+      "imputation_strategy": "Directly observed (no nulls)"
+    },
+    {
+      "feature_name": "term_duration_days",
+      "data_type": "numeric_int",
+      "description": "Invoice-intrinsic feature: term_duration_days",
+      "as_of_rule": "Available at invoice posting time T",
+      "imputation_strategy": "Directly observed (no nulls)"
+    },
+    {
+      "feature_name": "days_until_due_at_posting",
+      "data_type": "numeric_int",
+      "description": "Invoice-intrinsic feature: days_until_due_at_posting",
+      "as_of_rule": "Available at invoice posting time T",
+      "imputation_strategy": "Directly observed (no nulls)"
+    },
+    {
+      "feature_name": "posting_month",
+      "data_type": "numeric_int",
+      "description": "Invoice-intrinsic feature: posting_month",
+      "as_of_rule": "Available at invoice posting time T",
+      "imputation_strategy": "Directly observed (no nulls)"
+    },
+    {
+      "feature_name": "posting_day_of_month",
+      "data_type": "numeric_int",
+      "description": "Invoice-intrinsic feature: posting_day_of_month",
+      "as_of_rule": "Available at invoice posting time T",
+      "imputation_strategy": "Directly observed (no nulls)"
+    },
+    {
+      "feature_name": "posting_day_of_week",
+      "data_type": "numeric_int",
+      "description": "Invoice-intrinsic feature: posting_day_of_week",
+      "as_of_rule": "Available at invoice posting time T",
+      "imputation_strategy": "Directly observed (no nulls)"
+    },
+    {
+      "feature_name": "posting_quarter",
+      "data_type": "numeric_int",
+      "description": "Invoice-intrinsic feature: posting_quarter",
+      "as_of_rule": "Available at invoice posting time T",
+      "imputation_strategy": "Directly observed (no nulls)"
+    },
+    {
+      "feature_name": "is_weekend_posting",
+      "data_type": "numeric_int",
+      "description": "Invoice-intrinsic feature: is_weekend_posting",
+      "as_of_rule": "Available at invoice posting time T",
+      "imputation_strategy": "Directly observed (no nulls)"
+    },
+    {
+      "feature_name": "due_month",
+      "data_type": "numeric_int",
+      "description": "Invoice-intrinsic feature: due_month",
+      "as_of_rule": "Available at invoice posting time T",
+      "imputation_strategy": "Directly observed (no nulls)"
+    },
+    {
+      "feature_name": "due_day_of_week",
+      "data_type": "numeric_int",
+      "description": "Invoice-intrinsic feature: due_day_of_week",
+      "as_of_rule": "Available at invoice posting time T",
+      "imputation_strategy": "Directly observed (no nulls)"
+    },
+    {
+      "feature_name": "is_weekend_due",
+      "data_type": "numeric_int",
+      "description": "Invoice-intrinsic feature: is_weekend_due",
+      "as_of_rule": "Available at invoice posting time T",
+      "imputation_strategy": "Directly observed (no nulls)"
+    },
+    {
+      "feature_name": "cust_prior_invoice_count",
+      "data_type": "numeric_int",
+      "description": "As-of customer historical metric: cust_prior_invoice_count",
+      "as_of_rule": "Derived strictly from payment/invoice events occurring before posting date T",
+      "imputation_strategy": "None (zero default)"
+    },
+    {
+      "feature_name": "cust_prior_payment_count",
+      "data_type": "numeric_int",
+      "description": "As-of customer historical metric: cust_prior_payment_count",
+      "as_of_rule": "Derived strictly from payment/invoice events occurring before posting date T",
+      "imputation_strategy": "None (zero default)"
+    },
+    {
+      "feature_name": "cust_prior_late_count",
+      "data_type": "numeric_int",
+      "description": "As-of customer historical metric: cust_prior_late_count",
+      "as_of_rule": "Derived strictly from payment/invoice events occurring before posting date T",
+      "imputation_strategy": "None (zero default)"
+    },
+    {
+      "feature_name": "cust_late_payment_rate",
+      "data_type": "numeric_float",
+      "description": "As-of customer historical metric: cust_late_payment_rate",
+      "as_of_rule": "Derived strictly from payment/invoice events occurring before posting date T",
+      "imputation_strategy": "Train median (0.329609)"
+    },
+    {
+      "feature_name": "cust_avg_delay",
+      "data_type": "numeric_float",
+      "description": "As-of customer historical metric: cust_avg_delay",
+      "as_of_rule": "Derived strictly from payment/invoice events occurring before posting date T",
+      "imputation_strategy": "Train median (0.170732)"
+    },
+    {
+      "feature_name": "cust_median_delay",
+      "data_type": "numeric_float",
+      "description": "As-of customer historical metric: cust_median_delay",
+      "as_of_rule": "Derived strictly from payment/invoice events occurring before posting date T",
+      "imputation_strategy": "Train median (0.0)"
+    },
+    {
+      "feature_name": "cust_std_delay",
+      "data_type": "numeric_float",
+      "description": "As-of customer historical metric: cust_std_delay",
+      "as_of_rule": "Derived strictly from payment/invoice events occurring before posting date T",
+      "imputation_strategy": "Train median (4.036694)"
+    },
+    {
+      "feature_name": "cust_max_delay",
+      "data_type": "numeric_float",
+      "description": "As-of customer historical metric: cust_max_delay",
+      "as_of_rule": "Derived strictly from payment/invoice events occurring before posting date T",
+      "imputation_strategy": "Train median (15.0)"
+    },
+    {
+      "feature_name": "cust_min_delay",
+      "data_type": "numeric_float",
+      "description": "As-of customer historical metric: cust_min_delay",
+      "as_of_rule": "Derived strictly from payment/invoice events occurring before posting date T",
+      "imputation_strategy": "Train median (-7.0)"
+    },
+    {
+      "feature_name": "cust_recent_avg_delay_3",
+      "data_type": "numeric_float",
+      "description": "As-of customer historical metric: cust_recent_avg_delay_3",
+      "as_of_rule": "Derived strictly from payment/invoice events occurring before posting date T",
+      "imputation_strategy": "Train median (0.0)"
+    },
+    {
+      "feature_name": "cust_recent_late_rate_3",
+      "data_type": "numeric_float",
+      "description": "As-of customer historical metric: cust_recent_late_rate_3",
+      "as_of_rule": "Derived strictly from payment/invoice events occurring before posting date T",
+      "imputation_strategy": "Train median (0.333333)"
+    },
+    {
+      "feature_name": "days_since_last_payment",
+      "data_type": "numeric_int",
+      "description": "As-of customer historical metric: days_since_last_payment",
+      "as_of_rule": "Derived strictly from payment/invoice events occurring before posting date T",
+      "imputation_strategy": "Train median (2.0)"
+    },
+    {
+      "feature_name": "days_since_prev_invoice",
+      "data_type": "numeric_int",
+      "description": "As-of customer historical metric: days_since_prev_invoice",
+      "as_of_rule": "Derived strictly from payment/invoice events occurring before posting date T",
+      "imputation_strategy": "Train median (1.0)"
+    },
+    {
+      "feature_name": "is_new_customer",
+      "data_type": "numeric_int",
+      "description": "As-of customer historical metric: is_new_customer",
+      "as_of_rule": "Derived strictly from payment/invoice events occurring before posting date T",
+      "imputation_strategy": "None (zero default)"
+    },
+    {
+      "feature_name": "business_code",
+      "data_type": "categorical",
+      "description": "Categorical attribute: business_code",
+      "as_of_rule": "Available at invoice posting time T",
+      "imputation_strategy": "Native categorical / string"
+    },
+    {
+      "feature_name": "currency",
+      "data_type": "categorical",
+      "description": "Categorical attribute: currency",
+      "as_of_rule": "Available at invoice posting time T",
+      "imputation_strategy": "Native categorical / string"
+    },
+    {
+      "feature_name": "payment_terms",
+      "data_type": "categorical",
+      "description": "Categorical attribute: payment_terms",
+      "as_of_rule": "Available at invoice posting time T",
+      "imputation_strategy": "Native categorical / string"
+    }
+  ]
+}

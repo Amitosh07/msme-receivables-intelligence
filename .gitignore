@@ -54,10 +54,11 @@ dist-ssr/
 .DS_Store
 Thumbs.db
 
-# Large raw datasets (preserve sample/test data if needed)
+# Large raw datasets & processed parquet files
 data/*.csv
 data/*.xlsx
-data/*.parquet
+data/**/*.parquet
+*.parquet
 !data/sample_*.csv
 
 # ML artifacts

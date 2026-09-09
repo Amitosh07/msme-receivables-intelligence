@@ -1,0 +1,83 @@
+{
+  "pipeline_name": "Phase 1 Canonical Data Pipeline & As-Of Feature Engineering",
+  "timestamp_utc": "2026-09-09T19:32:04.054367+00:00",
+  "source_dataset": "data\\dataset.csv",
+  "source_rows": 50000,
+  "cleaned_canonical_rows": 48833,
+  "artifacts": {
+    "canonical_dataset": "canonical_dataset.parquet",
+    "train_dataset": "train.parquet",
+    "validation_dataset": "validation.parquet",
+    "test_dataset": "test.parquet",
+    "open_inference_dataset": "open_inference.parquet",
+    "feature_metadata": "feature_metadata.json"
+  },
+  "row_counts": {
+    "canonical_total": 48833,
+    "train": 27403,
+    "validation": 5813,
+    "test": 5936,
+    "open_inference": 9681
+  },
+  "temporal_splits": {
+    "closed_records_count": 39152,
+    "train_count": 27403,
+    "train_pct": 69.99,
+    "validation_count": 5813,
+    "validation_pct": 14.85,
+    "test_count": 5936,
+    "test_pct": 15.16,
+    "open_inference_count": 9681,
+    "val_cutoff_date": "2019-10-09 00:00:00",
+    "test_cutoff_date": "2019-12-10 00:00:00",
+    "train_min_date": "2018-12-30 00:00:00",
+    "train_max_date": "2019-10-08 00:00:00",
+    "val_min_date": "2019-10-09 00:00:00",
+    "val_max_date": "2019-12-09 00:00:00",
+    "test_min_date": "2019-12-10 00:00:00",
+    "test_max_date": "2020-02-27 00:00:00",
+    "open_min_date": "2020-02-27 00:00:00",
+    "open_max_date": "2020-05-22 00:00:00"
+  },
+  "features": {
+    "total_count": 29,
+    "numeric_count": 26,
+    "categorical_count": 3,
+    "list": [
+      "amount",
+      "log_amount",
+      "term_duration_days",
+      "days_until_due_at_posting",
+      "posting_month",
+      "posting_day_of_month",
+      "posting_day_of_week",
+      "posting_quarter",
+      "is_weekend_posting",
+      "due_month",
+      "due_day_of_week",
+      "is_weekend_due",
+      "cust_prior_invoice_count",
+      "cust_prior_payment_count",
+      "cust_prior_late_count",
+      "cust_late_payment_rate",
+      "cust_avg_delay",
+      "cust_median_delay",
+      "cust_std_delay",
+      "cust_max_delay",
+      "cust_min_delay",
+      "cust_recent_avg_delay_3",
+      "cust_recent_late_rate_3",
+      "days_since_last_payment",
+      "days_since_prev_invoice",
+      "is_new_customer",
+      "business_code",
+      "currency",
+      "payment_terms"
+    ]
+  },
+  "targets": {
+    "classification_target": "is_late",
+    "delay_target": "delay_days",
+    "timing_regression_target": "days_until_payment"
+  }
+}
