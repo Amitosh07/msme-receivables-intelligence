@@ -18,10 +18,15 @@ class ImportErrorRow(BaseModel):
 class PaymentImportResponse(BaseModel):
     """Summary of payment CSV batch import results."""
     total_rows: int
+    valid_rows: int = 0
     imported: int
+    matched: int = 0
     duplicates: int
+    duplicates_in_file: int = 0
+    duplicates_existing: int = 0
     rejected: int
     unmatched: int
+    preview: bool = False
     errors: List[ImportErrorRow] = []
 
 

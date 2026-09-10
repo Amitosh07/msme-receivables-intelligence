@@ -16,6 +16,8 @@ class TestTaskQueue(unittest.TestCase):
         # Use a dedicated test queue to avoid interfering with any other queue
         self.queue_name = f"test_queue_{uuid.uuid4().hex[:8]}"
         self.queue = TaskQueue(queue_name=self.queue_name)
+        if not self.queue.ping():
+            self.skipTest("Redis is not running on localhost:6379")
 
     def tearDown(self):
         self.queue.clear()

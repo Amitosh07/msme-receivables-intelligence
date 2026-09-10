@@ -61,6 +61,7 @@ def upload_invoice_document(
     business_id: uuid.UUID,
     file_content: bytes,
     original_filename: str,
+    commit: bool = True,
 ) -> InvoiceDocument:
     """
     Validates, stores PDF in object storage, and creates an InvoiceDocument record.
@@ -99,7 +100,9 @@ def upload_invoice_document(
 
     try:
         db.add(doc)
-        db.commit()
+        db.flush()
+        if commit:
+            db.commit()
         db.refresh(doc)
         logger.info(
             "Stored invoice document: id=%s, business_id=%s, size=%d bytes",

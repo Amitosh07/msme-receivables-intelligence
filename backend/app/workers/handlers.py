@@ -5,7 +5,7 @@ Worker task handlers for asynchronous background processing.
 import logging
 import uuid
 from typing import Any, Dict
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from backend.app.models.customer import Customer
@@ -64,9 +64,27 @@ def handle_parse_invoice(
         logger.info("Document %s is already in ERROR status. Skipping duplicate extraction.", doc_id)
         raise PermanentParserError(f"Document {doc_id} previously failed processing and is in ERROR status.")
 
-    # 3. Transition document status to PROCESSING
-    doc.processing_status = "PROCESSING"
+    # 3. Transition document status atomically and reload it.  This avoids
+    # continuing with stale ORM state after a previous attempt or commit.
+    db.execute(
+        update(InvoiceDocument)
+        .where(
+            InvoiceDocument.id == doc_id,
+            InvoiceDocument.business_id == task.business_id,
+            InvoiceDocument.processing_status.in_(("PENDING", "PROCESSING")),
+        )
+        .values(processing_status="PROCESSING", error_message=None)
+    )
     db.commit()
+    db.expire_all()
+    doc = db.scalar(
+        select(InvoiceDocument).where(
+            InvoiceDocument.id == doc_id,
+            InvoiceDocument.business_id == task.business_id,
+        )
+    )
+    if not doc:
+        raise PermanentParserError(f"Invoice document {doc_id} disappeared during processing.")
 
     # 4. Read PDF from storage & execute parser
     try:
@@ -75,6 +93,7 @@ def handle_parse_invoice(
             pdf_bytes = storage.read(doc.storage_key)
         except StorageFileNotFoundError as e:
             doc.processing_status = "ERROR"
+            doc.error_message = "The uploaded PDF could not be found in document storage."
             db.commit()
             raise PermanentParserError(f"Storage file missing for document {doc_id}: {doc.storage_key}") from e
         except StorageError as e:
@@ -85,6 +104,7 @@ def handle_parse_invoice(
         if not result.success or not result.invoice:
             error_msg = result.error or "Invoice could not be parsed: required invoice fields were not found."
             doc.processing_status = "ERROR"
+            doc.error_message = error_msg[:500]
             db.commit()
             raise PermanentParserError(error_msg)
 
@@ -92,6 +112,7 @@ def handle_parse_invoice(
         raise
     except Exception as e:
         doc.processing_status = "ERROR"
+        doc.error_message = "An internal parser error prevented this document from being processed."
         db.commit()
         raise PermanentParserError(f"Invoice could not be parsed: {e}") from e
 
@@ -133,6 +154,17 @@ def handle_parse_invoice(
 
     if existing_inv:
         invoice = existing_inv
+        # A retry or a second document for the same natural invoice key must
+        # converge on the same row while still repairing incomplete state.
+        invoice.customer_id = customer.id
+        invoice.invoice_date = extracted.invoice_date
+        invoice.due_date = extracted.due_date
+        invoice.amount = extracted.amount
+        invoice.currency = extracted.currency
+        invoice.payment_terms = extracted.payment_terms
+        invoice.processing_status = "PROCESSED"
+        if invoice.document_id is None:
+            invoice.document_id = doc.id
         logger.info(
             "Invoice with number '%s' already exists for tenant. Linking existing record.",
             extracted.invoice_number,
@@ -177,8 +209,11 @@ def handle_parse_invoice(
     # 9. Update InvoiceDocument and Task linkages
     doc.invoice_id = invoice.id
     doc.processing_status = "PROCESSED"
+    doc.error_message = None
     task.invoice_id = invoice.id
     db.commit()
+    db.refresh(task)
+    db.refresh(doc)
 
     logger.info(
         "Successfully parsed invoice document %s into invoice %s (%s %s)",
@@ -243,4 +278,3 @@ def handle_predict_invoice(
     except Exception as e:
         logger.error("Error scoring invoice %s: %s", invoice_id, e)
         raise
-

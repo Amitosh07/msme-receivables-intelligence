@@ -30,6 +30,7 @@ class InvoiceDocumentResponse(BaseModel):
     content_type: str
     file_size: int
     processing_status: str
+    error_message: Optional[str] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

@@ -30,6 +30,30 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
     return text
 
 
+def extract_layout_text_from_pdf(pdf_bytes: bytes) -> str:
+    """Extract sorted text blocks, preserving lines and approximate reading order."""
+    if not pdf_bytes:
+        return ""
+    try:
+        import fitz
+
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        pages = []
+        for page in doc:
+            blocks = page.get_text("blocks", sort=True)
+            page_lines = [
+                str(block[4]).strip()
+                for block in blocks
+                if len(block) > 4 and str(block[4]).strip()
+            ]
+            pages.append("\n".join(page_lines))
+        doc.close()
+        return "\n\n".join(pages).strip()
+    except Exception as e:
+        logger.debug("Layout-aware PDF extraction encountered error: %s", e)
+        return ""
+
+
 def _extract_via_fitz(pdf_bytes: bytes) -> str:
     """Extract text using PyMuPDF (fitz)."""
     try:

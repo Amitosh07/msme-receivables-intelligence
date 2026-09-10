@@ -2,20 +2,23 @@
 name = "msme-receivables-backend"
 version = "0.1.0"
 description = "Backend and ML services for MSME Receivables Intelligence Platform"
-readme = "README.md"
+readme = {text = "MSME Receivables Intelligence Platform backend", content-type = "text/plain"}
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110.0",
     "uvicorn[standard]>=0.28.0",
     "pydantic>=2.6.0",
     "pydantic-settings>=2.2.0",
+    "email-validator>=2.1.0",
     "sqlalchemy>=2.0.28",
     "asyncpg>=0.29.0",
     "psycopg2-binary>=2.9.9",
-    "psycopg>=3.1.0",
+    "psycopg[binary]>=3.1.0",
     "alembic>=1.13.1",
     "redis>=5.0.3",
     "pypdf>=4.0.0",
+    "PyMuPDF>=1.23.0",
+    "Pillow>=10.0.0",
     "pytesseract>=0.3.10",
     "python-jose[cryptography]>=3.3.0",
     "passlib[bcrypt]>=1.7.4",
@@ -39,6 +42,13 @@ dev = [
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+# The application is run from the repository root (as ``backend.app``), rather
+# than distributed as an importable wheel.  Explicitly disabling automatic
+# discovery keeps ``pip install -e backend`` from treating ``app``, ``ml`` and
+# Alembic migrations as competing top-level distributions.
+[tool.setuptools]
+packages = []
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

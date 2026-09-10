@@ -247,6 +247,38 @@ python -m backend.app.workers.runtime
 python -m unittest discover -s backend/tests -v
 ```
 
+---
+
+## 12. Phase 7 — Frontend Product
+
+The React/TypeScript application lives directly in `frontend/` and communicates only with FastAPI. It provides registration and login, authenticated receivables views, invoice search/filtering/detail, prediction presentation, PDF invoice upload, and CSV payment-history import.
+
+### Start the frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+By default, the app calls `http://localhost:8000`. To point it at another FastAPI deployment, copy `frontend/.env.example` to `frontend/.env` and set `VITE_API_BASE_URL`.
+
+Run the production build with:
+
+```bash
+cd frontend
+npm run build
+```
+
+### Local Phase 7 workflow
+
+1. Start PostgreSQL/Redis, FastAPI, and the worker using the commands above.
+2. Start the frontend Vite server.
+3. Register a business owner, then upload payment history as a CSV (`invoice_number`, `payment_date`, `payment_amount`).
+4. Upload invoice PDFs. The import screen shows the server-provided document lifecycle: Pending, Processing, Ready, or Failed.
+5. Review actual outstanding/overdue totals, risk prioritisation, and clearly labelled payment estimates in the dashboard and invoice detail views.
+
+The current backend implements CSV payment imports only and does not expose `/dashboard/summary` or `/dashboard/cashflow`; the frontend therefore derives its displayed totals and prioritisation from authenticated invoice and prediction API responses. It never fabricates data.
 
 
 

@@ -34,8 +34,8 @@ from backend.app.services.prediction_service import (
     predict_for_invoice,
 )
 from backend.app.services.task_service import create_task
-from backend.app.workers.queue import get_task_queue
 from backend.app.workers.runtime import WorkerService
+from backend.tests.queue_fakes import InMemoryTaskQueue
 
 
 class TestPredictionIntegration(unittest.TestCase):
@@ -44,7 +44,7 @@ class TestPredictionIntegration(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
         self.db: Session = SessionLocal()
-        self.queue = get_task_queue()
+        self.queue = InMemoryTaskQueue()
         self.worker = WorkerService(queue=self.queue)
         self.queue.clear()
 

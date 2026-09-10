@@ -23,6 +23,7 @@ from backend.app.services.task_service import (
     complete_task,
     fail_task,
     get_pending_tasks,
+    recover_stale_processing_tasks,
 )
 from backend.app.workers.queue import TaskQueue, get_task_queue
 from backend.app.workers.router import TaskRouter
@@ -59,6 +60,9 @@ class WorkerService:
         Scans PostgreSQL for PENDING tasks and re-enqueues them to Redis.
         Ensures tasks survive temporary Redis restarts or disconnections.
         """
+        recovered = recover_stale_processing_tasks(db)
+        if recovered:
+            db.expire_all()
         pending = get_pending_tasks(db, limit=100)
         re_enqueued = 0
         for task in pending:
@@ -115,7 +119,32 @@ class WorkerService:
             except TransientParserError as e:
                 logger.warning("Transient error processing task %s: %s", task_id, e)
                 fail_task(db, task_id, str(e), retryable=True)
+                db.expire_all()
                 db_task = db.get(type(task), task_id)
+                doc_id_str = payload.get("invoice_document_id")
+                if doc_id_str:
+                    try:
+                        doc_id = uuid.UUID(str(doc_id_str))
+                        retrying = bool(db_task and db_task.status == "PENDING")
+                        db.execute(
+                            update(InvoiceDocument)
+                            .where(
+                                InvoiceDocument.id == doc_id,
+                                InvoiceDocument.business_id == task.business_id,
+                            )
+                            .values(
+                                processing_status="PENDING" if retrying else "ERROR",
+                                error_message=(
+                                    "A temporary processing error occurred; retry queued."
+                                    if retrying
+                                    else str(e).split("\n")[0][:500]
+                                ),
+                            )
+                        )
+                        db.commit()
+                    except Exception as doc_err:
+                        db.rollback()
+                        logger.warning("Could not update retry state for task %s: %s", task_id, doc_err)
                 if db_task and db_task.status == "PENDING":
                     try:
                         self.queue.enqueue(
@@ -149,6 +178,15 @@ class WorkerService:
                             .values(processing_status="ERROR")
                         )
                         db.execute(stmt_doc)
+                        clean_error = str(e).split("\n")[0][:500]
+                        db.execute(
+                            update(InvoiceDocument)
+                            .where(
+                                InvoiceDocument.id == doc_id,
+                                InvoiceDocument.business_id == task.business_id,
+                            )
+                            .values(error_message=clean_error)
+                        )
                         db.commit()
                     except Exception as doc_err:
                         logger.warning("Could not update document status to ERROR for task %s: %s", task_id, doc_err)

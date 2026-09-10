@@ -2,9 +2,9 @@
 Parser data structures and custom exceptions.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
-from typing import Optional
+from typing import Dict, List, Optional
 
 
 class ParserError(Exception):
@@ -36,6 +36,7 @@ class ExtractedInvoice:
     extraction_method: str = "text"  # "text" or "ocr"
     confidence: float = 1.0
     raw_text: str = ""
+    field_confidence: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -44,4 +45,6 @@ class ExtractionResult:
     success: bool
     invoice: Optional[ExtractedInvoice] = None
     error: Optional[str] = None
+    error_code: Optional[str] = None
     method: str = "text"
+    warnings: List[str] = field(default_factory=list)

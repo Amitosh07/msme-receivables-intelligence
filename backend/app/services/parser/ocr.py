@@ -10,12 +10,31 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+def ocr_availability() -> tuple[bool, str]:
+    """Return whether both OCR libraries and the Tesseract executable are usable."""
+    try:
+        import fitz  # noqa: F401
+        from PIL import Image  # noqa: F401
+        import pytesseract
+        pytesseract.get_tesseract_version()
+        return True, "available"
+    except ImportError as e:
+        return False, f"OCR Python dependency unavailable: {e}"
+    except Exception:
+        return False, "Tesseract OCR executable is not installed or not discoverable."
+
+
 def extract_text_via_ocr(pdf_bytes: bytes, max_pages: int = 3) -> str:
     """
     Renders PDF pages to images and runs optical character recognition (OCR).
     Limits page rendering to first max_pages to maintain V1 latency bounds.
     """
     if not pdf_bytes:
+        return ""
+
+    available, reason = ocr_availability()
+    if not available:
+        logger.info("OCR unavailable: %s", reason)
         return ""
 
     try:

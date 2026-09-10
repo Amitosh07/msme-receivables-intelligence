@@ -81,9 +81,13 @@ def generate_invoice_prediction(
             detail=str(e),
         ) from e
     except Exception as e:
+        # Log the diagnostic server-side; never expose model paths, SQL, or a
+        # stack trace to the browser.
+        import logging
+        logging.getLogger(__name__).exception("Prediction generation failed for invoice %s", invoice_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Inference error: {e}",
+            detail="Prediction could not be generated. Verify the model artifacts and try again.",
         ) from e
 
 

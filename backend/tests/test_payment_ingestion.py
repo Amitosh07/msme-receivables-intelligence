@@ -114,7 +114,8 @@ class TestPaymentIngestion(unittest.TestCase):
         data = response.json()
 
         self.assertEqual(data["total_rows"], 2)
-        self.assertEqual(data["imported"], 1)   # Matched invoice
+        self.assertEqual(data["imported"], 2)   # Both valid rows were persisted
+        self.assertEqual(data["matched"], 1)
         self.assertEqual(data["unmatched"], 1)  # Unmatched invoice retained
         self.assertEqual(data["duplicates"], 0)
         self.assertEqual(data["rejected"], 0)

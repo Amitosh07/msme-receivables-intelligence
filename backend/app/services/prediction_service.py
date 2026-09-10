@@ -114,9 +114,9 @@ def validate_invoice_for_scoring(invoice: Optional[Invoice]) -> None:
     if not invoice:
         raise InvoiceNotReadyError("Invoice does not exist.")
 
-    if invoice.processing_status == "ERROR":
+    if invoice.processing_status != "PROCESSED":
         raise InvoiceNotReadyError(
-            f"Cannot generate prediction: invoice {invoice.id} processing_status is 'ERROR'."
+            f"Cannot generate prediction until invoice processing is complete (current status: {invoice.processing_status})."
         )
 
     if invoice.amount is None or float(invoice.amount) <= 0:
@@ -295,14 +295,15 @@ def predict_for_invoice(
     Executes V1 ML prediction for an invoice and idempotently persists the result.
     Enforces tenant isolation: invoice must belong to business_id.
     """
-    invoice = db.get(Invoice, invoice_id)
+    # Lock the invoice row so concurrent retry/click requests converge on one
+    # prediction record even before the prediction row exists.
+    invoice = db.scalar(
+        select(Invoice)
+        .where(Invoice.id == invoice_id, Invoice.business_id == business_id)
+        .with_for_update()
+    )
     if not invoice:
         raise PredictionServiceError(f"Invoice {invoice_id} not found.")
-
-    if invoice.business_id != business_id:
-        raise PredictionServiceError(
-            f"Tenant boundary violation: invoice {invoice_id} does not belong to business {business_id}."
-        )
 
     validate_invoice_for_scoring(invoice)
 

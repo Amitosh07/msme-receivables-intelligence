@@ -23,6 +23,8 @@ from backend.app.services.invoice_service import (
     upload_invoice_document,
 )
 from backend.app.services.storage import get_storage
+from backend.app.services.task_service import create_task
+from backend.app.workers.queue import get_task_queue
 
 router = APIRouter(prefix="/invoices", tags=["Invoices"])
 
@@ -46,29 +48,41 @@ async def upload_invoice(
     content = await file.read()
     filename = file.filename or "invoice.pdf"
 
-    doc = upload_invoice_document(
-        db=db,
-        business_id=tenant_ctx.business_id,
-        file_content=content,
-        original_filename=filename,
-    )
-
     # Create asynchronous parsing task in PostgreSQL (authoritative source of truth)
-    from backend.app.services.task_service import create_task
-    from backend.app.workers.queue import get_task_queue
     import logging
     _logger = logging.getLogger(__name__)
 
-    task = create_task(
-        db=db,
-        business_id=tenant_ctx.business_id,
-        task_type="parse_invoice",
-        payload={
-            "invoice_document_id": str(doc.id),
-            "business_id": str(tenant_ctx.business_id),
-        },
-    )
-    db.commit()
+    try:
+        doc = upload_invoice_document(
+            db=db,
+            business_id=tenant_ctx.business_id,
+            file_content=content,
+            original_filename=filename,
+            commit=False,
+        )
+        task = create_task(
+            db=db,
+            business_id=tenant_ctx.business_id,
+            task_type="parse_invoice",
+            payload={
+                "invoice_document_id": str(doc.id),
+                "business_id": str(tenant_ctx.business_id),
+            },
+            commit=False,
+        )
+        db.commit()
+        db.refresh(doc)
+        db.refresh(task)
+    except Exception:
+        db.rollback()
+        # The metadata/task transaction failed, so remove the object that was
+        # already written by the storage abstraction.
+        if "doc" in locals():
+            try:
+                get_storage().delete(doc.storage_key)
+            except Exception:
+                _logger.warning("Could not clean up document storage after task creation failure.")
+        raise
 
     # Enqueue task to Redis queue for background worker consumption
     try:

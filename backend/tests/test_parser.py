@@ -203,6 +203,78 @@ class TestInvoiceParser(unittest.TestCase):
         self.assertEqual(inv.amount, 159241.00)
         self.assertEqual(inv.currency, "INR")
 
+    def test_parse_varied_realistic_layouts(self):
+        """Regression corpus: labels, dates, currencies, and tables vary by template."""
+        cases = [
+            (
+                "Modern SaaS",
+                "INVOICE\nInvoice Number: SAAS-2026-101\nCustomer: Northwind Labs\n"
+                "Issue Date: March 4, 2026\nPayment Due: April 3, 2026\n"
+                "Amount Due: USD 1,299.50\n",
+                "SAAS-2026-101", date(2026, 3, 4), date(2026, 4, 3), 1299.50, "USD",
+            ),
+            (
+                "Indian GST",
+                "TAX INVOICE\nBill No: GST/DEL/88\nBill Date: 04.03.2026\n"
+                "Terms of Payment: Net 15\nTaxable Value INR 10,000.00\n"
+                "CGST INR 900.00\nGrand Total INR 11,800.00\n",
+                "GST/DEL/88", date(2026, 3, 4), date(2026, 3, 19), 11800.00, "INR",
+            ),
+            (
+                "Alternate labels",
+                "Bill To: Cedar Co\nDocument Number: DOC-CA-77\nDocument Date: 2026-03-04\n"
+                "Pay By: 2026-03-19\nCurrency: CAD\nNet Payable: C$2,500.00\n",
+                "DOC-CA-77", date(2026, 3, 4), date(2026, 3, 19), 2500.00, "CAD",
+            ),
+        ]
+        for label, text, number, issued, due, amount, currency in cases:
+            with self.subTest(layout=label):
+                result = InvoiceParser.parse(_make_pdf(text))
+                self.assertTrue(result.success, result.error)
+                inv = result.invoice
+                self.assertEqual(inv.invoice_number, number)
+                self.assertEqual(inv.invoice_date, issued)
+                self.assertEqual(inv.due_date, due)
+                self.assertEqual(inv.amount, amount)
+                self.assertEqual(inv.currency, currency)
+
+    def test_currency_and_invoice_reference_variants(self):
+        """Common Indian labels/symbols and invoice identifiers remain parseable."""
+        cases = [
+            ("Invoice No: SIM/26-27/0426", "Grand Total: ₹1,25,000", "SIM/26-27/0426", 125000, "INR"),
+            ("Invoice #: INV-2026-001", "Total Amount: Rs. 50,000", "INV-2026-001", 50000, "INR"),
+            ("Inv No. SOIS/26-27/0213", "Amount Due: INR 125000", "SOIS/26-27/0213", 125000, "INR"),
+        ]
+        for number_line, amount_line, expected_number, amount, currency in cases:
+            with self.subTest(number=expected_number):
+                result = InvoiceParser.parse(_make_pdf(
+                    f"TAX INVOICE\n{number_line}\nInvoice Date: 15/07/2026\n"
+                    f"Payment Terms: Net 30\n{amount_line}\n"
+                ))
+                self.assertTrue(result.success, result.error)
+                self.assertEqual(result.invoice.invoice_number, expected_number)
+                self.assertEqual(result.invoice.amount, amount)
+                self.assertEqual(result.invoice.currency, currency)
+
+    def test_invoice_number_on_next_layout_line(self):
+        result = InvoiceParser.parse(_make_pdf(
+            "TAX INVOICE\nInvoice No\nBILL-1042\nDate: 2026-06-01\n"
+            "Due Date: 2026-06-16\nTotal: Rs 1,25,000\n"
+        ))
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.invoice.invoice_number, "BILL-1042")
+
+    def test_embedded_rupee_glyph_extracted_as_i_at_grand_total(self):
+        """Regression: native PDF extraction maps an embedded ₹ glyph to I."""
+        result = InvoiceParser.parse(_make_pdf(
+            "TAX INVOICE\nInvoice No: NSE/26-27/0596\nInvoice Date: 2026-07-12\n"
+            "Due Date: 2026-08-11\nGrand Total\nI331,860.00\nPayment Terms: Net 30\n"
+        ))
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.invoice.currency, "INR")
+        self.assertEqual(result.invoice.invoice_number, "NSE/26-27/0596")
+        self.assertEqual(result.invoice.amount, 331860.00)
+
 
 if __name__ == "__main__":
     unittest.main()

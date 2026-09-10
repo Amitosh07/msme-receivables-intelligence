@@ -5,13 +5,14 @@ PostgreSQL is the authoritative source of truth for task status.
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from backend.app.core.config import settings
 from backend.app.models.task import Task
+from backend.app.models.invoice_document import InvoiceDocument
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ def create_task(
     task_type: str,
     payload: Optional[Dict[str, Any]] = None,
     invoice_id: Optional[uuid.UUID] = None,
+    commit: bool = True,
 ) -> Task:
     """
     Creates and persists a new Task in PostgreSQL with status PENDING.
@@ -35,7 +37,9 @@ def create_task(
         invoice_id=invoice_id,
     )
     db.add(task)
-    db.commit()
+    db.flush()
+    if commit:
+        db.commit()
     db.refresh(task)
     return task
 
@@ -150,3 +154,60 @@ def get_pending_tasks(
     if task_type:
         query = query.where(Task.task_type == task_type)
     return list(db.scalars(query.order_by(Task.created_at.asc()).limit(limit)).all())
+
+
+def recover_stale_processing_tasks(db: Session) -> int:
+    """Return abandoned worker tasks to PENDING and make document state observable.
+
+    PostgreSQL is authoritative, so a Redis message that was popped immediately
+    before a worker crash must be reconstructed from the task row.  Only tasks
+    older than the configured lease are reclaimed, which avoids stealing work
+    from a healthy worker during an accidental overlapping startup.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(
+        minutes=settings.PROCESSING_TASK_STALE_MINUTES
+    )
+    stale_tasks = list(
+        db.scalars(
+            select(Task).where(
+                Task.status == "PROCESSING",
+                Task.started_at.is_not(None),
+                Task.started_at < cutoff,
+            )
+        ).all()
+    )
+    if not stale_tasks:
+        return 0
+
+    stale_ids = [task.id for task in stale_tasks]
+    db.execute(
+        update(Task)
+        .where(Task.id.in_(stale_ids), Task.status == "PROCESSING")
+        .values(status="PENDING", started_at=None)
+    )
+
+    document_ids: list[uuid.UUID] = []
+    for task in stale_tasks:
+        if task.task_type != "parse_invoice":
+            continue
+        raw_id = (task.payload or {}).get("invoice_document_id")
+        try:
+            document_ids.append(uuid.UUID(str(raw_id)))
+        except (TypeError, ValueError):
+            continue
+
+    if document_ids:
+        db.execute(
+            update(InvoiceDocument)
+            .where(
+                InvoiceDocument.id.in_(document_ids),
+                InvoiceDocument.processing_status == "PROCESSING",
+            )
+            .values(
+                processing_status="PENDING",
+                error_message="Processing was interrupted and has been queued for retry.",
+            )
+        )
+    db.commit()
+    logger.warning("Recovered %d stale PROCESSING task(s).", len(stale_ids))
+    return len(stale_ids)

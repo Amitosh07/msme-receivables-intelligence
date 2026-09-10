@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     REDIS_TASK_QUEUE_NAME: str = "msme_tasks"
     WORKER_POLL_INTERVAL_SECONDS: float = 1.0
     MAX_TASK_RETRIES: int = 3
+    PROCESSING_TASK_STALE_MINUTES: int = 5
 
     # App Info
     APP_NAME: str = "MSME Receivables Intelligence Platform"
