@@ -9,7 +9,7 @@ from backend.app.services.invoice_service import (
     upload_invoice_document,
     validate_invoice_pdf,
 )
-from backend.app.services.payment_import_service import import_payments_csv
+from backend.app.services.payment_import_service import import_payments_csv, import_payments_file
 
 __all__ = [
     "authenticate_user",
@@ -22,5 +22,5 @@ __all__ = [
     "get_invoice_by_id",
     "list_invoices_for_tenant",
     "import_payments_csv",
+    "import_payments_file",
 ]
-

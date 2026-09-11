@@ -6,8 +6,11 @@ worker task routing ('predict_invoice', 'score_invoice'), and prediction API end
 """
 
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+import tempfile
 import unittest
 import uuid
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 import pandas as pd
@@ -25,14 +28,22 @@ from backend.app.models.task import Task
 from backend.app.services.prediction_service import (
     COLD_START_IMPUTATION,
     FEATURE_COLUMNS,
+    INSUFFICIENT_HISTORY_REASON,
+    MIN_CUSTOMER_HISTORY_FOR_PREDICTION,
     PROHIBITED_COLUMNS,
+    InsufficientCustomerHistoryError,
     InvoiceNotReadyError,
     PredictionServiceError,
     build_inference_features,
+    evaluate_prediction_eligibility,
+    get_predictor,
     get_prediction_for_invoice,
     list_predictions_for_tenant,
     predict_for_invoice,
 )
+from backend.app.services import prediction_service
+from backend.app.services.prediction_cleanup import remove_invalid_prediction_results
+from backend.ml.inference.predict import InferenceError
 from backend.app.services.task_service import create_task
 from backend.app.workers.runtime import WorkerService
 from backend.tests.queue_fakes import InMemoryTaskQueue
@@ -133,6 +144,49 @@ class TestPredictionIntegration(unittest.TestCase):
         self.db.refresh(inv)
         return inv
 
+    def _add_completed_history(
+        self,
+        customer_id: uuid.UUID,
+        *,
+        business_id: uuid.UUID | None = None,
+        delays: list[int] | None = None,
+        provenances: list[str] | None = None,
+        start_date: date = date(2024, 1, 1),
+    ) -> list[Payment]:
+        business_id = business_id or self.business_a_id
+        delays = delays or [0, 1, 2]
+        provenances = provenances or ["legacy"] * len(delays)
+        payments = []
+        for index, (delay, provenance) in enumerate(zip(delays, provenances, strict=True)):
+            invoice_date = start_date + timedelta(days=index * 20)
+            due_date = invoice_date + timedelta(days=10)
+            historical_invoice = self._create_invoice(
+                business_id,
+                customer_id,
+                invoice_number=f"HIST-{uuid.uuid4().hex[:10].upper()}",
+                amount=1000 + index,
+                invoice_date=invoice_date,
+                due_date=due_date,
+            )
+            historical_invoice.payment_status = "PAID"
+            payment = Payment(
+                business_id=business_id,
+                invoice_id=historical_invoice.id,
+                invoice_reference=historical_invoice.invoice_number,
+                payment_date=datetime.combine(
+                    due_date + timedelta(days=delay),
+                    datetime.min.time(),
+                    tzinfo=timezone.utc,
+                ),
+                amount=historical_invoice.amount,
+                customer_identity_key=f"customer:{customer_id}",
+                provenance=provenance,
+            )
+            self.db.add(payment)
+            payments.append(payment)
+        self.db.commit()
+        return payments
+
     def test_feature_row_schema_and_no_leakage(self):
         """Verify feature row has exactly 29 columns and zero prohibited leakage columns."""
         inv = self._create_invoice(self.business_a_id, self.customer_a.id)
@@ -154,6 +208,7 @@ class TestPredictionIntegration(unittest.TestCase):
 
     def test_classifier_and_timing_inference_bounds(self):
         """Verify ML models output valid risk scores, tiers, non-negative days, and dates."""
+        self._add_completed_history(self.customer_a.id)
         inv = self._create_invoice(self.business_a_id, self.customer_a.id, amount=15000.0)
         pred = predict_for_invoice(self.db, inv.id, self.business_a_id)
 
@@ -172,8 +227,8 @@ class TestPredictionIntegration(unittest.TestCase):
         expected_date = inv.invoice_date + timedelta(days=int(round(pred.predicted_days_until_payment)))
         self.assertEqual(pred.expected_payment_date, expected_date)
 
-    def test_cold_start_customer_imputation(self):
-        """New customer with 0 prior history correctly gets frozen training medians."""
+    def test_cold_start_features_exist_but_production_prediction_is_unavailable(self):
+        """Training-compatible feature defaults never become a production prediction."""
         new_cust = Customer(
             id=uuid.uuid4(),
             business_id=self.business_a_id,
@@ -197,10 +252,12 @@ class TestPredictionIntegration(unittest.TestCase):
         self.assertAlmostEqual(df["days_since_last_payment"].iloc[0], COLD_START_IMPUTATION["days_since_last_payment"], places=4)
         self.assertAlmostEqual(df["days_since_prev_invoice"].iloc[0], COLD_START_IMPUTATION["days_since_prev_invoice"], places=4)
 
-        # Prediction runs smoothly without NaN
-        pred = predict_for_invoice(self.db, inv.id, self.business_a_id)
-        self.assertIsNotNone(pred.risk_score)
-        self.assertIsNotNone(pred.risk_tier)
+        with self.assertRaises(InsufficientCustomerHistoryError) as raised:
+            predict_for_invoice(self.db, inv.id, self.business_a_id)
+        self.assertEqual(raised.exception.eligible_history_count, 0)
+        self.assertIsNone(self.db.scalar(select(PredictionResult).where(
+            PredictionResult.invoice_id == inv.id
+        )))
 
     def test_as_of_historical_isolation(self):
         """Future invoices and payments strictly after invoice_date (T) are not leaked into features."""
@@ -219,6 +276,7 @@ class TestPredictionIntegration(unittest.TestCase):
             payment_date=datetime(2024, 1, 20, tzinfo=timezone.utc),
             amount=5000.0,
             reference="PAY-PRIOR",
+            provenance="legacy",
         )
         self.db.add(pay_prior)
 
@@ -246,6 +304,7 @@ class TestPredictionIntegration(unittest.TestCase):
             payment_date=datetime(2024, 3, 25, tzinfo=timezone.utc),
             amount=12000.0,
             reference="PAY-FUTURE",
+            provenance="legacy",
         )
         self.db.add(pay_future)
         self.db.commit()
@@ -283,6 +342,7 @@ class TestPredictionIntegration(unittest.TestCase):
 
     def test_prediction_idempotency(self):
         """Scoring the same invoice multiple times updates the existing row without duplicate keys."""
+        self._add_completed_history(self.customer_a.id)
         inv = self._create_invoice(self.business_a_id, self.customer_a.id, amount=8000.0)
 
         # First prediction
@@ -321,6 +381,7 @@ class TestPredictionIntegration(unittest.TestCase):
 
     def test_tenant_boundary_isolation(self):
         """Tenant B cannot score or read Tenant A's invoice prediction."""
+        self._add_completed_history(self.customer_a.id)
         inv_a = self._create_invoice(self.business_a_id, self.customer_a.id, amount=30000.0)
 
         # 1. Service level check
@@ -350,6 +411,7 @@ class TestPredictionIntegration(unittest.TestCase):
 
     def test_worker_task_routing_predict_invoice(self):
         """Worker routes and executes 'predict_invoice' and 'score_invoice' background tasks."""
+        self._add_completed_history(self.customer_a.id)
         inv = self._create_invoice(self.business_a_id, self.customer_a.id, amount=45000.0)
 
         # 1. Test predict_invoice task type
@@ -398,8 +460,103 @@ class TestPredictionIntegration(unittest.TestCase):
         self.db.refresh(task2)
         self.assertEqual(task2.status, "COMPLETED")
 
+    def test_worker_completes_insufficient_history_without_persisting_prediction(self):
+        """An expected unavailable state is not a failed worker task or fake prediction."""
+        inv = self._create_invoice(self.business_a_id, self.customer_a.id, amount=22000.0)
+        payload = {"invoice_id": str(inv.id)}
+        task = create_task(
+            db=self.db,
+            business_id=self.business_a_id,
+            task_type="predict_invoice",
+            payload=payload,
+        )
+        self.queue.enqueue(
+            task_id=task.id,
+            task_type=task.task_type,
+            business_id=task.business_id,
+            payload=payload,
+        )
+
+        self.assertTrue(self.worker.process_one_task(timeout=1))
+        self.db.refresh(task)
+        self.assertEqual(task.status, "COMPLETED")
+        self.assertEqual(task.invoice_id, inv.id)
+        self.assertIsNone(
+            self.db.scalar(
+                select(PredictionResult).where(
+                    PredictionResult.business_id == self.business_a_id,
+                    PredictionResult.invoice_id == inv.id,
+                )
+            )
+        )
+
+    def test_legacy_prediction_cleanup_removes_only_ineligible_rows(self):
+        """Cleanup removes <3-history predictions and preserves >=3-history predictions."""
+        ineligible_invoice = self._create_invoice(
+            self.business_a_id,
+            self.customer_a.id,
+            invoice_date=date(2024, 4, 1),
+            due_date=date(2024, 4, 30),
+        )
+        eligible_customer = Customer(
+            business_id=self.business_a_id,
+            name="Eligible Legacy Prediction Customer",
+        )
+        self.db.add(eligible_customer)
+        self.db.commit()
+        self._add_completed_history(eligible_customer.id)
+        eligible_invoice = self._create_invoice(
+            self.business_a_id,
+            eligible_customer.id,
+            invoice_date=date(2024, 4, 1),
+            due_date=date(2024, 4, 30),
+        )
+
+        ineligible_prediction = PredictionResult(
+            business_id=self.business_a_id,
+            invoice_id=ineligible_invoice.id,
+            prediction=False,
+            risk_score=0.2,
+            risk_tier="LOW",
+            predicted_days_until_payment=10.0,
+            expected_payment_date=date(2024, 4, 11),
+            classifier_model_version="payment_classifier_v1",
+            timing_model_version="payment_timing_v1",
+        )
+        eligible_prediction = PredictionResult(
+            business_id=self.business_a_id,
+            invoice_id=eligible_invoice.id,
+            prediction=True,
+            risk_score=0.8,
+            risk_tier="HIGH",
+            predicted_days_until_payment=40.0,
+            expected_payment_date=date(2024, 5, 11),
+            classifier_model_version="payment_classifier_v1",
+            timing_model_version="payment_timing_v1",
+        )
+        self.db.add_all([ineligible_prediction, eligible_prediction])
+        self.db.commit()
+        ineligible_id = ineligible_prediction.id
+        eligible_id = eligible_prediction.id
+
+        report = remove_invalid_prediction_results(
+            self.db,
+            business_id=self.business_a_id,
+        )
+
+        self.assertEqual(report.total_before, 2)
+        self.assertEqual(len(report.ineligible_ids), 1)
+        self.assertEqual(len(report.eligible_ids), 1)
+        self.assertEqual(len(report.ambiguous), 0)
+        self.assertEqual(report.deleted, 1)
+        self.assertEqual(report.total_after, 1)
+        self.assertEqual(report.source_counts_before, report.source_counts_after)
+        self.assertIsNone(self.db.get(PredictionResult, ineligible_id))
+        self.assertIsNotNone(self.db.get(PredictionResult, eligible_id))
+
     def test_prediction_api_endpoints(self):
         """Test POST /invoices/{id}/predict, GET /invoices/{id}/prediction, and GET /predictions."""
+        self._add_completed_history(self.customer_a.id)
         inv = self._create_invoice(self.business_a_id, self.customer_a.id, amount=18000.0)
 
         # 1. POST /invoices/{id}/predict
@@ -437,6 +594,266 @@ class TestPredictionIntegration(unittest.TestCase):
         # Should either be 0 or other predictions
         for item in res_other.json()["items"]:
             self.assertEqual(item["risk_tier"], other_tier)
+
+    def test_locked_history_threshold_zero_one_two_and_three(self):
+        self.assertEqual(MIN_CUSTOMER_HISTORY_FOR_PREDICTION, 3)
+        for count in (0, 1, 2):
+            customer = Customer(
+                business_id=self.business_a_id,
+                name=f"Threshold Customer {count}",
+            )
+            self.db.add(customer)
+            self.db.commit()
+            if count:
+                self._add_completed_history(customer.id, delays=[0] * count)
+            target = self._create_invoice(
+                self.business_a_id,
+                customer.id,
+                invoice_date=date(2024, 4, 1),
+                due_date=date(2024, 4, 30),
+            )
+            with self.assertRaises(InsufficientCustomerHistoryError) as raised:
+                predict_for_invoice(self.db, target.id, self.business_a_id)
+            self.assertEqual(raised.exception.eligible_history_count, count)
+            self.assertIsNone(self.db.scalar(select(PredictionResult).where(
+                PredictionResult.invoice_id == target.id
+            )))
+
+        eligible_customer = Customer(
+            business_id=self.business_a_id,
+            name="Threshold Customer 3",
+        )
+        self.db.add(eligible_customer)
+        self.db.commit()
+        self._add_completed_history(eligible_customer.id, delays=[0, 1, 2])
+        eligible_target = self._create_invoice(
+            self.business_a_id,
+            eligible_customer.id,
+            invoice_date=date(2024, 4, 1),
+            due_date=date(2024, 4, 30),
+        )
+        prediction = predict_for_invoice(
+            self.db,
+            eligible_target.id,
+            self.business_a_id,
+        )
+        self.assertIsNotNone(prediction.id)
+
+    def test_future_payment_reduces_three_total_outcomes_to_two_eligible(self):
+        payments = self._add_completed_history(self.customer_a.id, delays=[0, 0, 0])
+        target = self._create_invoice(
+            self.business_a_id,
+            self.customer_a.id,
+            invoice_date=date(2024, 4, 1),
+            due_date=date(2024, 4, 30),
+        )
+        payments[-1].payment_date = datetime(2024, 4, 2, tzinfo=timezone.utc)
+        self.db.commit()
+
+        eligibility = evaluate_prediction_eligibility(self.db, target)
+        self.assertEqual(eligibility.eligible_history_count, 2)
+        with self.assertRaises(InsufficientCustomerHistoryError):
+            predict_for_invoice(self.db, target.id, self.business_a_id)
+
+    def test_current_invoice_payment_is_excluded_from_eligibility_and_features(self):
+        self._add_completed_history(self.customer_a.id, delays=[0, 1])
+        target = self._create_invoice(
+            self.business_a_id,
+            self.customer_a.id,
+            invoice_date=date(2024, 4, 1),
+            due_date=date(2024, 4, 30),
+        )
+        self.db.add(Payment(
+            business_id=self.business_a_id,
+            invoice_id=target.id,
+            invoice_reference=target.invoice_number,
+            payment_date=datetime(2024, 4, 15, tzinfo=timezone.utc),
+            amount=target.amount,
+            customer_identity_key=f"customer:{self.customer_a.id}",
+            provenance="import",
+        ))
+        self.db.commit()
+
+        eligibility = evaluate_prediction_eligibility(self.db, target)
+        features = build_inference_features(self.db, target)
+        self.assertEqual(eligibility.eligible_history_count, 2)
+        self.assertEqual(features["cust_prior_payment_count"].iloc[0], 2)
+
+    def test_import_and_legacy_history_qualify_but_unmatched_does_not(self):
+        self._add_completed_history(
+            self.customer_a.id,
+            delays=[-1, 2, 5],
+            provenances=["legacy", "import", "import"],
+        )
+        self.db.add(Payment(
+            business_id=self.business_a_id,
+            invoice_id=None,
+            invoice_reference="UNMATCHED-HISTORY",
+            payment_date=datetime(2024, 2, 20, tzinfo=timezone.utc),
+            amount=900,
+            customer_identity_key=f"customer:{self.customer_a.id}",
+            provenance="import",
+        ))
+        self.db.commit()
+        target = self._create_invoice(
+            self.business_a_id,
+            self.customer_a.id,
+            invoice_date=date(2024, 4, 1),
+            due_date=date(2024, 4, 30),
+        )
+
+        eligibility = evaluate_prediction_eligibility(self.db, target)
+        features = build_inference_features(self.db, target)
+        self.assertTrue(eligibility.prediction_available)
+        self.assertEqual(eligibility.eligible_history_count, 3)
+        self.assertEqual(features["cust_prior_payment_count"].iloc[0], 3)
+
+    def test_customer_specific_features_reach_actual_model_path(self):
+        customer_b = Customer(
+            business_id=self.business_a_id,
+            name="Late History Customer",
+        )
+        self.db.add(customer_b)
+        self.db.commit()
+        self._add_completed_history(self.customer_a.id, delays=[-5, -3, -1])
+        self._add_completed_history(customer_b.id, delays=[10, 15, 20])
+        target_a = self._create_invoice(
+            self.business_a_id,
+            self.customer_a.id,
+            amount=20000,
+            invoice_date=date(2024, 4, 1),
+            due_date=date(2024, 4, 30),
+        )
+        target_b = self._create_invoice(
+            self.business_a_id,
+            customer_b.id,
+            amount=20000,
+            invoice_date=date(2024, 4, 1),
+            due_date=date(2024, 4, 30),
+        )
+        features_a = build_inference_features(self.db, target_a)
+        features_b = build_inference_features(self.db, target_b)
+        self.assertNotEqual(
+            features_a["cust_avg_delay"].iloc[0],
+            features_b["cust_avg_delay"].iloc[0],
+        )
+        self.assertNotEqual(
+            features_a["cust_late_payment_rate"].iloc[0],
+            features_b["cust_late_payment_rate"].iloc[0],
+        )
+
+        predictor = get_predictor()
+        with patch.object(predictor, "predict", wraps=predictor.predict) as actual_predict:
+            predict_for_invoice(self.db, target_a.id, self.business_a_id)
+            predict_for_invoice(self.db, target_b.id, self.business_a_id)
+        self.assertEqual(actual_predict.call_count, 2)
+        received_a = actual_predict.call_args_list[0].args[0]
+        received_b = actual_predict.call_args_list[1].args[0]
+        self.assertNotEqual(
+            received_a["cust_avg_delay"].iloc[0],
+            received_b["cust_avg_delay"].iloc[0],
+        )
+
+    def test_actual_classifier_and_timing_artifacts_are_invoked(self):
+        self._add_completed_history(self.customer_a.id, delays=[-2, 1, 4])
+        target = self._create_invoice(self.business_a_id, self.customer_a.id)
+        predictor = get_predictor()
+        with (
+            patch.object(
+                predictor.classifier,
+                "predict_proba",
+                wraps=predictor.classifier.predict_proba,
+            ) as classifier_probability,
+            patch.object(
+                predictor.classifier,
+                "predict",
+                wraps=predictor.classifier.predict,
+            ) as classifier_label,
+            patch.object(
+                predictor.timing_model,
+                "predict",
+                wraps=predictor.timing_model.predict,
+            ) as timing_prediction,
+        ):
+            prediction = predict_for_invoice(
+                self.db,
+                target.id,
+                self.business_a_id,
+            )
+        self.assertTrue(classifier_probability.called)
+        self.assertTrue(classifier_label.called)
+        self.assertTrue(timing_prediction.called)
+        self.assertEqual(prediction.classifier_model_version, "payment_classifier_v1")
+        self.assertEqual(prediction.timing_model_version, "payment_timing_v1")
+
+    def test_missing_model_artifacts_fail_clearly_without_fallback(self):
+        self._add_completed_history(self.customer_a.id)
+        target = self._create_invoice(self.business_a_id, self.customer_a.id)
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.object(prediction_service, "MODEL_DIR", Path(directory)),
+                patch.object(prediction_service, "_cached_predictor", None),
+            ):
+                with self.assertRaisesRegex(InferenceError, "Model metadata not found"):
+                    predict_for_invoice(self.db, target.id, self.business_a_id)
+        self.db.rollback()
+
+    def test_insufficient_history_api_is_structured_and_persists_nothing(self):
+        target = self._create_invoice(self.business_a_id, self.customer_a.id)
+        posted = self.client.post(
+            f"/invoices/{target.id}/predict",
+            headers=self.headers_a,
+        )
+        self.assertEqual(posted.status_code, 200)
+        body = posted.json()
+        self.assertFalse(body["prediction_available"])
+        self.assertEqual(body["reason"], INSUFFICIENT_HISTORY_REASON)
+        self.assertEqual(body["eligible_history_count"], 0)
+        self.assertEqual(body["required_history_count"], 3)
+        for forbidden in (
+            "risk_score",
+            "risk_tier",
+            "predicted_days_until_payment",
+            "expected_payment_date",
+        ):
+            self.assertNotIn(forbidden, body)
+        self.assertIsNone(self.db.scalar(select(PredictionResult).where(
+            PredictionResult.invoice_id == target.id
+        )))
+
+        fetched = self.client.get(
+            f"/invoices/{target.id}/prediction",
+            headers=self.headers_a,
+        )
+        self.assertEqual(fetched.status_code, 200)
+        self.assertEqual(fetched.json(), body)
+
+    def test_same_customer_name_in_other_tenant_never_grants_eligibility(self):
+        same_name_a = Customer(
+            business_id=self.business_a_id,
+            name="Shared Identity Name",
+        )
+        same_name_b = Customer(
+            business_id=self.business_b_id,
+            name="Shared Identity Name",
+        )
+        self.db.add_all([same_name_a, same_name_b])
+        self.db.commit()
+        self._add_completed_history(
+            same_name_a.id,
+            business_id=self.business_a_id,
+            delays=[0, 1, 2],
+        )
+        target_b = self._create_invoice(
+            self.business_b_id,
+            same_name_b.id,
+            invoice_date=date(2024, 4, 1),
+            due_date=date(2024, 4, 30),
+        )
+        eligibility = evaluate_prediction_eligibility(self.db, target_b)
+        self.assertEqual(eligibility.eligible_history_count, 0)
+        with self.assertRaises(InsufficientCustomerHistoryError):
+            predict_for_invoice(self.db, target_b.id, self.business_b_id)
 
 
 if __name__ == "__main__":

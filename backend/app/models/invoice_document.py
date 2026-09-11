@@ -7,11 +7,12 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
-from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text, func
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.models.base import Base
+from backend.app.models.invoice import InvoiceOrigin
 
 if TYPE_CHECKING:
     from backend.app.models.business import Business
@@ -24,6 +25,12 @@ class InvoiceDocument(Base):
     Maintains link to storage key and processing lifecycle.
     """
     __tablename__ = "invoice_documents"
+    __table_args__ = (
+        CheckConstraint(
+            "origin IN ('HISTORICAL', 'CURRENT')",
+            name="ck_invoice_documents_origin",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -64,6 +71,12 @@ class InvoiceDocument(Base):
         String(32),
         nullable=False,
         default="PENDING",
+    )
+    origin: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=InvoiceOrigin.CURRENT.value,
+        server_default=InvoiceOrigin.CURRENT.value,
     )
     error_message: Mapped[str | None] = mapped_column(
         Text,

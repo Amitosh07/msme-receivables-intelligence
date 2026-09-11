@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from backend.app.models.prediction import PredictionResult
     from backend.app.models.forecast import CashflowForecast
     from backend.app.models.task import Task
+    from backend.app.models.payment_proof import PaymentProof
 
 
 class Business(Base, TimestampMixin):
@@ -87,6 +88,11 @@ class Business(Base, TimestampMixin):
     )
     tasks: Mapped[List[Task]] = relationship(
         "Task",
+        back_populates="business",
+        cascade="all, delete-orphan",
+    )
+    payment_proofs: Mapped[List[PaymentProof]] = relationship(
+        "PaymentProof",
         back_populates="business",
         cascade="all, delete-orphan",
     )

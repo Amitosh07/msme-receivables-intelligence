@@ -6,6 +6,7 @@ import uuid
 from datetime import date, datetime
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict
+from backend.app.schemas.payment import PaymentResponse
 
 
 class InvoiceUploadResponse(BaseModel):
@@ -15,6 +16,7 @@ class InvoiceUploadResponse(BaseModel):
     original_filename: str
     file_size: int
     processing_status: str = "PENDING"
+    origin: str = "CURRENT"
     task_id: Optional[uuid.UUID] = None
     created_at: datetime
 
@@ -30,6 +32,7 @@ class InvoiceDocumentResponse(BaseModel):
     content_type: str
     file_size: int
     processing_status: str
+    origin: str = "CURRENT"
     error_message: Optional[str] = None
     created_at: datetime
 
@@ -40,7 +43,8 @@ class InvoiceResponse(BaseModel):
     """Full detail response for an invoice entity."""
     id: uuid.UUID
     business_id: uuid.UUID
-    customer_id: uuid.UUID
+    customer_id: Optional[uuid.UUID] = None
+    unresolved_customer_name: Optional[str] = None
     invoice_number: str
     invoice_date: date
     due_date: date
@@ -49,6 +53,7 @@ class InvoiceResponse(BaseModel):
     payment_terms: Optional[str] = None
     payment_status: str
     processing_status: str
+    origin: str = "CURRENT"
     document_id: Optional[uuid.UUID] = None
     created_at: datetime
     updated_at: datetime
@@ -62,3 +67,10 @@ class InvoiceListResponse(BaseModel):
     total: int
     skip: int
     limit: int
+
+
+class InvoiceDetailResponse(InvoiceResponse):
+    """Extended invoice response with payment summary for detail views."""
+    total_paid: float = 0.0
+    outstanding_balance: float = 0.0
+    payments: List[PaymentResponse] = []

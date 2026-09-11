@@ -14,6 +14,7 @@ from backend.app.schemas.payment import (
     PaymentImportResponse,
     PaymentResponse,
 )
+from backend.app.schemas.customer import CustomerCreate, CustomerResponse
 
 __all__ = [
     "RegisterRequest",
@@ -34,5 +35,6 @@ __all__ = [
     "ImportErrorRow",
     "PaymentImportResponse",
     "PaymentResponse",
+    "CustomerCreate",
+    "CustomerResponse",
 ]
-

@@ -61,6 +61,7 @@ def upload_invoice_document(
     business_id: uuid.UUID,
     file_content: bytes,
     original_filename: str,
+    origin: str = "CURRENT",
     commit: bool = True,
 ) -> InvoiceDocument:
     """
@@ -96,6 +97,7 @@ def upload_invoice_document(
         content_type="application/pdf",
         file_size=len(file_content),
         processing_status="PENDING",
+        origin=origin,
     )
 
     try:
@@ -176,6 +178,7 @@ def list_invoices_for_tenant(
     skip: int = 0,
     limit: int = 50,
     payment_status: Optional[str] = None,
+    origin: Optional[str] = None,
 ) -> Tuple[List[Invoice], int]:
     """
     List invoices for a business tenant with pagination and optional status filter.
@@ -187,6 +190,10 @@ def list_invoices_for_tenant(
     if payment_status:
         query = query.where(Invoice.payment_status == payment_status.upper())
         count_query = count_query.where(Invoice.payment_status == payment_status.upper())
+
+    if origin:
+        query = query.where(Invoice.origin == origin.upper())
+        count_query = count_query.where(Invoice.origin == origin.upper())
 
     total = db.scalar(count_query) or 0
     items = list(

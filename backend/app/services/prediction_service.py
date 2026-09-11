@@ -6,7 +6,8 @@ invokes the trained V1 ML inference models, and persists prediction results idem
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -25,6 +26,14 @@ from backend.app.models.prediction import PredictionResult
 from backend.ml.inference.predict import InferenceError, V1Predictor
 
 logger = logging.getLogger(__name__)
+
+MIN_CUSTOMER_HISTORY_FOR_PREDICTION = 3
+INSUFFICIENT_HISTORY_REASON = "Insufficient customer payment history"
+ELIGIBLE_PAYMENT_PROVENANCE = frozenset(
+    {"legacy", "import", "manual", "proof_verified"}
+)
+CLASSIFIER_MODEL_VERSION = "payment_classifier_v1"
+TIMING_MODEL_VERSION = "payment_timing_v1"
 
 # Base paths
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -109,6 +118,81 @@ class InvoiceNotReadyError(PredictionServiceError):
     pass
 
 
+class InsufficientCustomerHistoryError(PredictionServiceError):
+    """Expected business state when fewer than three prior outcomes exist."""
+
+    def __init__(self, invoice_id: uuid.UUID, eligible_history_count: int):
+        super().__init__(INSUFFICIENT_HISTORY_REASON)
+        self.invoice_id = invoice_id
+        self.eligible_history_count = eligible_history_count
+        self.required_history_count = MIN_CUSTOMER_HISTORY_FOR_PREDICTION
+
+
+@dataclass(frozen=True)
+class PredictionEligibility:
+    """Eligibility evidence derived from tenant-scoped PostgreSQL history."""
+
+    invoice_id: uuid.UUID
+    customer_id: uuid.UUID | None
+    eligible_history_count: int
+
+    @property
+    def prediction_available(self) -> bool:
+        return self.eligible_history_count >= MIN_CUSTOMER_HISTORY_FOR_PREDICTION
+
+
+def get_eligible_prior_payments(db: Session, invoice: Invoice) -> list[Payment]:
+    """Return completed, delay-computable outcomes known strictly before T."""
+    if invoice.customer_id is None:
+        return []
+    return list(
+        db.scalars(
+            select(Payment)
+            .join(Invoice, Payment.invoice_id == Invoice.id)
+            .where(
+                Payment.business_id == invoice.business_id,
+                Payment.provenance.in_(ELIGIBLE_PAYMENT_PROVENANCE),
+                Payment.amount > 0,
+                Invoice.business_id == invoice.business_id,
+                Invoice.customer_id == invoice.customer_id,
+                Invoice.invoice_date < invoice.invoice_date,
+                Invoice.id != invoice.id,
+                func.cast(Payment.payment_date, Date) < invoice.invoice_date,
+            )
+            .order_by(Payment.payment_date.asc(), Payment.id.asc())
+        ).all()
+    )
+
+
+def evaluate_prediction_eligibility(
+    db: Session,
+    invoice: Invoice,
+) -> PredictionEligibility:
+    """Evaluate the locked three-outcome rule for one invoice."""
+    return PredictionEligibility(
+        invoice_id=invoice.id,
+        customer_id=invoice.customer_id,
+        eligible_history_count=len(get_eligible_prior_payments(db, invoice)),
+    )
+
+
+def get_prediction_eligibility(
+    db: Session,
+    business_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+) -> PredictionEligibility:
+    """Load one tenant-owned invoice and evaluate its history threshold."""
+    invoice = db.scalar(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            Invoice.business_id == business_id,
+        )
+    )
+    if invoice is None:
+        raise PredictionServiceError(f"Invoice {invoice_id} not found.")
+    return evaluate_prediction_eligibility(db, invoice)
+
+
 def validate_invoice_for_scoring(invoice: Optional[Invoice]) -> None:
     """Ensure invoice exists, is not in ERROR processing state, and has required data."""
     if not invoice:
@@ -163,20 +247,8 @@ def build_inference_features(db: Session, invoice: Invoice) -> pd.DataFrame:
     else:
         days_since_prev_invoice = COLD_START_IMPUTATION["days_since_prev_invoice"]
 
-    # 2. Query prior cleared payments of this customer strictly before ref_date
-    prior_payments = list(
-        db.scalars(
-            select(Payment)
-            .join(Invoice, Payment.invoice_id == Invoice.id)
-            .where(
-                Payment.business_id == invoice.business_id,
-                Invoice.customer_id == invoice.customer_id,
-                func.cast(Payment.payment_date, Date) < ref_date,
-                Invoice.id != invoice.id,
-            )
-            .order_by(Payment.payment_date.asc())
-        ).all()
-    )
+    # 2. Reuse the exact eligible completed-outcome query used by the gate.
+    prior_payments = get_eligible_prior_payments(db, invoice)
 
     cust_prior_payment_count = len(prior_payments)
 
@@ -307,6 +379,24 @@ def predict_for_invoice(
 
     validate_invoice_for_scoring(invoice)
 
+    eligibility = evaluate_prediction_eligibility(db, invoice)
+    logger.info(
+        "Prediction eligibility: invoice_id=%s customer_id=%s "
+        "eligible_history_count=%d prediction_available=%s "
+        "classifier=%s timing=%s",
+        invoice.id,
+        invoice.customer_id,
+        eligibility.eligible_history_count,
+        eligibility.prediction_available,
+        CLASSIFIER_MODEL_VERSION,
+        TIMING_MODEL_VERSION,
+    )
+    if not eligibility.prediction_available:
+        raise InsufficientCustomerHistoryError(
+            invoice.id,
+            eligibility.eligible_history_count,
+        )
+
     # 1. Build 29-feature vector
     features_df = build_inference_features(db, invoice)
 
@@ -337,8 +427,8 @@ def predict_for_invoice(
         pred.risk_tier = risk_tier
         pred.predicted_days_until_payment = round(predicted_days, 2)
         pred.expected_payment_date = expected_payment_date
-        pred.classifier_model_version = "payment_classifier_v1"
-        pred.timing_model_version = "payment_timing_v1"
+        pred.classifier_model_version = CLASSIFIER_MODEL_VERSION
+        pred.timing_model_version = TIMING_MODEL_VERSION
         logger.info("Updated existing prediction for invoice %s (risk=%s, tier=%s)", invoice.id, risk_score, risk_tier)
     else:
         pred = PredictionResult(
@@ -350,8 +440,8 @@ def predict_for_invoice(
             risk_tier=risk_tier,
             predicted_days_until_payment=round(predicted_days, 2),
             expected_payment_date=expected_payment_date,
-            classifier_model_version="payment_classifier_v1",
-            timing_model_version="payment_timing_v1",
+            classifier_model_version=CLASSIFIER_MODEL_VERSION,
+            timing_model_version=TIMING_MODEL_VERSION,
         )
         db.add(pred)
         logger.info("Created new prediction for invoice %s (risk=%s, tier=%s)", invoice.id, risk_score, risk_tier)
@@ -367,12 +457,17 @@ def get_prediction_for_invoice(
     invoice_id: uuid.UUID,
 ) -> Optional[PredictionResult]:
     """Retrieve the prediction for an invoice, enforcing tenant isolation."""
-    return db.scalar(
+    prediction = db.scalar(
         select(PredictionResult).where(
             PredictionResult.business_id == business_id,
             PredictionResult.invoice_id == invoice_id,
         )
     )
+    if prediction is None:
+        return None
+    if not evaluate_prediction_eligibility(db, prediction.invoice).prediction_available:
+        return None
+    return prediction
 
 
 def list_predictions_for_tenant(
@@ -387,14 +482,15 @@ def list_predictions_for_tenant(
     if risk_tier:
         query = query.where(PredictionResult.risk_tier == risk_tier.upper())
 
-    count_query = select(func.count()).select_from(query.subquery())
-    total = db.scalar(count_query) or 0
-
-    results = list(
+    persisted_results = list(
         db.scalars(
             query.order_by(PredictionResult.created_at.desc())
-            .offset(skip)
-            .limit(limit)
         ).all()
     )
-    return results, total
+    eligible_results = [
+        prediction
+        for prediction in persisted_results
+        if evaluate_prediction_eligibility(db, prediction.invoice).prediction_available
+    ]
+    total = len(eligible_results)
+    return eligible_results[skip : skip + limit], total

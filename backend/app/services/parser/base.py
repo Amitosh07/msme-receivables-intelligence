@@ -29,9 +29,18 @@ class ExtractedInvoice:
     invoice_date: date
     due_date: date
     amount: float
-    currency: str
+    currency: Optional[str] = None
     customer_name: Optional[str] = None
     customer_ref: Optional[str] = None
+    customer_gstin: Optional[str] = None
+    seller_name: Optional[str] = None
+    seller_gstin: Optional[str] = None
+    subtotal: Optional[float] = None
+    taxable_amount: Optional[float] = None
+    cgst: Optional[float] = None
+    sgst: Optional[float] = None
+    igst: Optional[float] = None
+    purchase_order_number: Optional[str] = None
     payment_terms: Optional[str] = None
     extraction_method: str = "text"  # "text" or "ocr"
     confidence: float = 1.0

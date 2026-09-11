@@ -242,16 +242,16 @@ Interactive OpenAPI documentation is accessible at `http://localhost:8000/docs`.
 python -m backend.app.workers.runtime
 ```
 
-### Run Complete Test Suite (104 tests across Phases 0, 1, 2, 3, 4, 5, and 6):
+#### Run Complete Backend Test Suite (234 tests across Phases 0–6 and Decisions A–G):
 ```bash
-python -m unittest discover -s backend/tests -v
+.\.venv\Scripts\python.exe -m unittest discover -s backend\tests -v
 ```
 
 ---
 
-## 12. Phase 7 — Frontend Product
+## 12. Phase 7 & V1 Amendments (Decisions A–G)
 
-The React/TypeScript application lives directly in `frontend/` and communicates only with FastAPI. It provides registration and login, authenticated receivables views, invoice search/filtering/detail, prediction presentation, PDF invoice upload, and CSV payment-history import.
+The React/TypeScript application lives directly in `frontend/` and communicates only with FastAPI. It provides registration and login, authenticated receivables views, invoice search/filtering/detail, prediction presentation, PDF invoice upload, CSV/XLSX payment-history import, manual payment recording, and payment proof verification.
 
 ### Start the frontend
 
@@ -261,24 +261,50 @@ npm install
 npm run dev
 ```
 
-By default, the app calls `http://localhost:8000`. To point it at another FastAPI deployment, copy `frontend/.env.example` to `frontend/.env` and set `VITE_API_BASE_URL`.
-
-Run the production build with:
+Run TypeScript verification and production build:
 
 ```bash
 cd frontend
-npm run build
+.\node_modules\.bin\tsc.cmd --noEmit
+.\node_modules\.bin\vite.cmd build
 ```
 
-### Local Phase 7 workflow
+---
 
-1. Start PostgreSQL/Redis, FastAPI, and the worker using the commands above.
-2. Start the frontend Vite server.
-3. Register a business owner, then upload payment history as a CSV (`invoice_number`, `payment_date`, `payment_amount`).
-4. Upload invoice PDFs. The import screen shows the server-provided document lifecycle: Pending, Processing, Ready, or Failed.
-5. Review actual outstanding/overdue totals, risk prioritisation, and clearly labelled payment estimates in the dashboard and invoice detail views.
+## 13. V1 Release Specifications & Governance (Decisions A–G)
 
-The current backend implements CSV payment imports only and does not expose `/dashboard/summary` or `/dashboard/cashflow`; the frontend therefore derives its displayed totals and prioritisation from authenticated invoice and prediction API responses. It never fabricates data.
+### 13.1 Customer Identity Foundation (Decision A)
+- **Hierarchy:** `Business -> Customer -> Invoice -> Payment`. Customer identity is strictly tenant-scoped.
+- **Matching Priority:** (1) Explicit customer ID, (2) Normalized GSTIN (15-character check digit validated), (3) Exact normalized name within tenant.
+- **Unresolved Customer Contract:** Invoices without high-confidence customer matches keep `customer_id = NULL` and preserve `unresolved_customer_name` explicitly without fabricating speculative customers.
 
+### 13.2 Historical Payment Ingestion (Decision B)
+- **Supported Formats:** CSV and XLSX/Excel tabular imports.
+- **Canonical Natural Key:** Idempotency is enforced by the PostgreSQL unique index `uq_payment_natural_key` on `(business_id, customer_identity_key, lower(btrim(coalesce(invoice_reference, ''))), payment_date, amount)`.
+- **Provenance:** Imported payments receive `provenance = 'import'`. Unmatched valid payments are safely retained (`invoice_id = NULL`).
 
+### 13.3 Customer-History-Driven ML Inference (Decision C)
+- **3-Outcome Eligibility Rule:** A prediction is available **only** when the customer has at least 3 eligible prior completed payment outcomes before the target invoice date.
+- **Insufficient History Behavior:** If fewer than 3 eligible prior outcomes exist, `prediction_available = false` with reason `"Insufficient customer payment history"`. The platform **never** fabricates fallback risk scores, fallback tiers (e.g. MEDIUM), or fake payment dates.
+- **Zero Leakage:** Inference features are strictly calculated as-of target invoice date $T$. Subsequent invoices and payment outcomes are excluded.
+- **Model Authenticity:** Real XGBoost models (`payment_classifier_v1`, `payment_timing_v1`) are loaded and executed. No hardcoded or heuristic shortcuts exist in production paths.
 
+### 13.4 Manual Payment Recording (Decision D)
+- Allows users to record payments directly on invoices with payment date, amount, reference, and note.
+- Creates real `Payment` records with `provenance = 'manual'`.
+- Factual invoice payment status updates dynamically (`OPEN` -> `PARTIAL` -> `PAID`).
+- Manual payments become eligible customer history for subsequent inference points.
+
+### 13.5 Payment Proof Upload & Verification (Decision E)
+- Supported formats: PDF (native text, layout fallback, and 300 DPI Tesseract OCR fallback), CSV, and XLSX.
+- Uploaded proofs are stored in tenant-isolated paths with SHA-256 integrity hashing (`file_hash`).
+- Proof processing is handled asynchronously via the single worker (`parse_payment_proof` task type).
+- Only verified evidence with no invoice/customer/amount conflict creates a `Payment` with `provenance = 'proof_verified'`. Conflicting evidence transitions to `NEEDS_REVIEW` or `FAILED` without creating payments.
+- `0.85` is an operational evidence threshold, not a claimed statistical probability.
+
+### 13.6 Model Trust, Security & Compliance Disclosures (Decision F & G)
+- **Factual vs Predicted Distinction:** The UI and API strictly distinguish factual data (invoice amount, due date, actual payments received, proof verification) from predicted estimates (risk probability, risk tier, predicted timing). Predicted dates are explicitly labeled and never presented as guarantees.
+- **Timezone Policy:** Factual payment dates follow the `Asia/Kolkata` business calendar date policy, normalizing date-only facts to UTC midnight to avoid artificial future-date discrepancies across midnight boundaries. Future payment dates are rejected.
+- **Local Storage Limitation:** Local development storage is plaintext filesystem storage and is **not encrypted at rest**. Production environments must employ encrypted object storage (e.g. AWS S3 with SSE-KMS) and managed access policies.
+- **OCR Dependency:** Scanned image PDF parsing requires system-installed Tesseract OCR (`tesseract-ocr`). If OCR is absent, scanned image PDFs fail gracefully into `FAILED` / `NEEDS_REVIEW` states.
+- **No Overstated Claims:** The platform makes no claim of legal compliance, universal invoice layout parsing, or guaranteed payment outcomes.

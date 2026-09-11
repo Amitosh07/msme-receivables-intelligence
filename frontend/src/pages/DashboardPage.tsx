@@ -12,13 +12,167 @@ export function DashboardPage() {
   if (state.loading) return <LoadingState label="Loading receivables overview…" />;
   if (state.error) return <ErrorState message={normaliseError(state.error).message} retry={state.refresh} />;
   const { invoices, predictions } = state.data!;
-  if (!invoices.length) return <EmptyState title="No receivables yet" detail="Upload your first invoice to start building your receivables view." action={<Link className="button primary" to="/upload">Upload an invoice</Link>} />;
-  const today = new Date().toISOString().slice(0, 10), open = invoices.filter(i => i.payment_status === "OPEN"), pred = new Map(predictions.map(p => [p.invoice_id, p])), overdue = open.filter(i => i.due_date < today), high = open.filter(i => pred.get(i.id)?.risk_tier === "HIGH"), expected = open.filter(i => pred.get(i.id)?.expected_payment_date);
-  const displayTotal = (items: Invoice[]) => { const currencies = [...new Set(items.map(i => i.currency))]; return currencies.length === 1 ? money(items.reduce((sum, i) => sum + i.amount, 0), currencies[0]) : "—"; };
-  const buckets = [["Current", "current"], ["1–30 days", "1-30"], ["31–60 days", "31-60"], ["61–90 days", "61-90"], ["90+ days", "90+"]].map(([label, key]) => ({ label, key, items: open.filter(i => { const age = Math.max(0, Math.floor((new Date(today).getTime() - new Date(i.due_date).getTime()) / 86400000)); return key === "current" ? i.due_date >= today : key === "1-30" ? age <= 30 : key === "31-60" ? age <= 60 && age >= 31 : key === "61-90" ? age <= 90 && age >= 61 : age > 90; }) }));
+  const today = new Date().toISOString().slice(0, 10);
+  const open = invoices.filter(i => i.payment_status === "OPEN");
+  const pred = new Map(predictions.map(p => [p.invoice_id, p]));
+  const overdue = open.filter(i => i.due_date < today);
+  const high = open.filter(i => pred.get(i.id)?.risk_tier === "HIGH");
+  const expected = open.filter(i => pred.get(i.id)?.expected_payment_date);
+
+  const displayTotal = (items: Invoice[]) => {
+    if (!items.length) return "₹0";
+    const currencies = [...new Set(items.map(i => i.currency))];
+    return currencies.length === 1 ? money(items.reduce((sum, i) => sum + i.amount, 0), currencies[0]) : "—";
+  };
+
+  const expectedAmount = expected.reduce((sum, i) => sum + i.amount, 0);
+  const expectedCurrency = expected.length ? ([...new Set(expected.map(i => i.currency))].length === 1 ? expected[0].currency : "—") : "INR";
+  const displayExpected = expected.length ? (expectedCurrency === "—" ? "—" : money(expectedAmount, expectedCurrency)) : "₹0";
+
+  const buckets = [["Current", "current"], ["1–30 days", "1-30"], ["31–60 days", "31-60"], ["61–90 days", "61-90"], ["90+ days", "90+"]].map(([label, key]) => ({
+    label,
+    key,
+    items: open.filter(i => {
+      const age = Math.max(0, Math.floor((new Date(today).getTime() - new Date(i.due_date).getTime()) / 86400000));
+      return key === "current" ? i.due_date >= today : key === "1-30" ? age <= 30 : key === "31-60" ? age <= 60 && age >= 31 : key === "61-90" ? age <= 90 && age >= 61 : age > 90;
+    })
+  }));
   const max = Math.max(1, open.length);
-  return <><section className="metric-grid"><Metric icon={Wallet} label="Outstanding" value={displayTotal(open)} detail={open.length + " open invoices"} onClick={() => navigate("/invoices?status=OPEN")} /><Metric icon={AlertTriangle} label="Overdue" value={displayTotal(overdue)} detail={overdue.length + " past due"} onClick={() => navigate("/invoices?status=OPEN&aging=1-30")} /><Metric icon={ReceiptText} label="Needs attention" value={String(high.length)} detail="High late-payment risk" onClick={() => navigate("/invoices?risk=HIGH")} /><Metric icon={CalendarDays} label="Expected payments" value={String(expected.length)} detail="With a payment estimate" onClick={() => navigate("/invoices")} /></section><section className="dashboard-grid"><Panel title="Prioritize follow-up" subtitle="A/R aging · select a segment to filter invoices" link="View invoices" to="/invoices"><div className="aging-bar">{buckets.map(b => <button key={b.key} onClick={() => navigate("/invoices?status=OPEN&aging=" + b.key)} style={{ width: (b.items.length / max * 100) + "%" }} aria-label={b.label + ": " + b.items.length + " invoices"}>{b.items.length || ""}</button>)}</div><div className="aging-legend">{buckets.map(b => <button key={b.key} onClick={() => navigate("/invoices?status=OPEN&aging=" + b.key)}><i /> {b.label} <b>{b.items.length}</b></button>)}</div></Panel><Panel title="Expected payments" subtitle="Model estimates — not confirmed payment dates" link="View invoices" to="/invoices">{expected.length ? <Projection invoices={expected} predictions={pred} /> : <p className="quiet">No payment estimates yet. Generate predictions to populate the cash-flow outlook.</p>}</Panel></section></>;
+
+  return (
+    <>
+      <section className="metric-grid">
+        <Metric
+          icon={Wallet}
+          label="Outstanding"
+          value={open.length ? displayTotal(open) : "₹0"}
+          detail={open.length ? `${open.length} open invoices` : "0 open invoices"}
+          onClick={() => navigate("/invoices?status=OPEN")}
+        />
+        <Metric
+          icon={AlertTriangle}
+          label="Overdue"
+          value={overdue.length ? displayTotal(overdue) : "₹0"}
+          detail={overdue.length ? `${overdue.length} past due` : "0 past due"}
+          onClick={() => navigate("/invoices?status=OPEN&aging=1-30")}
+        />
+        <Metric
+          icon={ReceiptText}
+          label="Needs attention"
+          value={String(high.length)}
+          detail={high.length ? "High late-payment risk" : "0 high risk"}
+          onClick={() => navigate("/invoices?risk=HIGH")}
+        />
+        <Metric
+          icon={CalendarDays}
+          label="Expected payments"
+          value={displayExpected}
+          detail={expected.length ? `${expected.length} payment estimates` : "0 payment estimates"}
+          onClick={() => navigate("/invoices")}
+        />
+      </section>
+
+      {!invoices.length ? (
+        <section style={{ marginTop: "24px" }}>
+          <EmptyState
+            title="No receivables yet"
+            detail="Upload your first invoice to start building your receivables overview and risk insights."
+            action={<Link className="button primary" to="/upload">Upload an invoice</Link>}
+          />
+        </section>
+      ) : (
+        <section className="dashboard-grid">
+          <Panel title="Prioritize follow-up" subtitle="A/R aging · select a segment to filter invoices" link="View invoices" to="/invoices">
+            <div className="aging-bar">
+              {buckets.map(b => (
+                <button
+                  key={b.key}
+                  onClick={() => navigate("/invoices?status=OPEN&aging=" + b.key)}
+                  style={{ width: (b.items.length / max * 100) + "%" }}
+                  aria-label={b.label + ": " + b.items.length + " invoices"}
+                >
+                  {b.items.length || ""}
+                </button>
+              ))}
+            </div>
+            <div className="aging-legend">
+              {buckets.map(b => (
+                <button key={b.key} onClick={() => navigate("/invoices?status=OPEN&aging=" + b.key)}>
+                  <i /> {b.label} <b>{b.items.length}</b>
+                </button>
+              ))}
+            </div>
+          </Panel>
+          <Panel title="Expected payments" subtitle="Model estimates — not confirmed payment dates" link="View invoices" to="/invoices">
+            {expected.length ? (
+              <Projection invoices={expected} predictions={pred} />
+            ) : (
+              <p className="quiet">No payment estimates yet. Generate predictions to populate the cash-flow outlook.</p>
+            )}
+          </Panel>
+        </section>
+      )}
+    </>
+  );
 }
-function Metric({ icon: Icon, label, value, detail, onClick }: { icon: typeof Wallet; label: string; value: string; detail: string; onClick: () => void }) { return <button className="metric" onClick={onClick}><Icon size={19} /><span>{label}</span><strong>{value}</strong><small>{detail}</small><svg className="sparkline" viewBox="0 0 90 20" aria-label="Trend unavailable: historical daily data is not available"><path d="M1 16 18 13 34 15 52 8 70 11 89 4" /></svg></button>; }
-function Panel({ title, subtitle, link, to, children }: { title: string; subtitle: string; link: string; to: string; children: React.ReactNode }) { return <section className="panel"><div className="panel-heading"><div><h2>{title}</h2><p>{subtitle}</p></div><Link to={to}>{link}<ArrowRight size={15} /></Link></div>{children}</section>; }
-function Projection({ invoices, predictions }: { invoices: Invoice[]; predictions: Map<string, Prediction> }) { const grouped = new Map<string, Invoice[]>(); invoices.forEach(i => { const day = predictions.get(i.id)?.expected_payment_date; if (day) grouped.set(day, [...(grouped.get(day) || []), i]); }); const points = [...grouped].filter(([day]) => day <= new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10)).sort(([a], [b]) => a.localeCompare(b)); const max = Math.max(...points.map(([, items]) => items.reduce((sum, i) => sum + i.amount, 0)), 1); return <div className="projection" role="img" aria-label="Expected payments projection for the next 30 days">{points.map(([day, items]) => { const amount = items.reduce((sum, i) => sum + i.amount, 0); return <div className="projection-point" key={day} style={{ height: Math.max(12, amount / max * 100) + "%" }} tabIndex={0}><span className="projection-tip"><b>{date(day)}</b><br />{items.length === 1 ? money(amount, items[0].currency) : items.length + " invoices"}<br />{items.map(i => i.invoice_number + " · " + money(i.amount, i.currency)).join("\n")}</span></div>; })}<div className="projection-axis">Next 30 days · estimated payment dates</div></div>; }
+
+function Metric({ icon: Icon, label, value, detail, onClick }: { icon: typeof Wallet; label: string; value: string; detail: string; onClick: () => void }) {
+  return (
+    <button className="metric" onClick={onClick}>
+      <Icon size={19} />
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{detail}</small>
+    </button>
+  );
+}
+
+function Panel({ title, subtitle, link, to, children }: { title: string; subtitle: string; link: string; to: string; children: React.ReactNode }) {
+  return (
+    <section className="panel">
+      <div className="panel-heading">
+        <div>
+          <h2>{title}</h2>
+          <p>{subtitle}</p>
+        </div>
+        <Link to={to}>
+          {link}
+          <ArrowRight size={15} />
+        </Link>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function Projection({ invoices, predictions }: { invoices: Invoice[]; predictions: Map<string, Prediction> }) {
+  const grouped = new Map<string, Invoice[]>();
+  invoices.forEach(i => {
+    const day = predictions.get(i.id)?.expected_payment_date;
+    if (day) grouped.set(day, [...(grouped.get(day) || []), i]);
+  });
+  const points = [...grouped]
+    .filter(([day]) => day <= new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10))
+    .sort(([a], [b]) => a.localeCompare(b));
+  const max = Math.max(...points.map(([, items]) => items.reduce((sum, i) => sum + i.amount, 0)), 1);
+
+  return (
+    <div className="projection" role="img" aria-label="Expected payments projection for the next 30 days">
+      {points.map(([day, items]) => {
+        const amount = items.reduce((sum, i) => sum + i.amount, 0);
+        return (
+          <div className="projection-point" key={day} style={{ height: Math.max(12, amount / max * 100) + "%" }} tabIndex={0}>
+            <span className="projection-tip">
+              <b>{date(day)}</b>
+              <br />
+              {items.length === 1 ? money(amount, items[0].currency) : items.length + " invoices"}
+              <br />
+              {items.map(i => i.invoice_number + " · " + money(i.amount, i.currency)).join("\n")}
+            </span>
+          </div>
+        );
+      })}
+      <div className="projection-axis">Next 30 days · estimated payment dates</div>
+    </div>
+  );
+}

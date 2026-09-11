@@ -10,6 +10,7 @@ from typing import Iterable, Optional
 
 from backend.app.services.parser.base import ExtractedInvoice, ExtractionResult
 from backend.app.services.parser.normalization import normalize_invoice_text
+from backend.app.services.customer_identity import normalize_gstin
 from backend.app.services.parser.ocr import extract_text_via_ocr, ocr_availability
 from backend.app.services.parser.pdf_text import extract_layout_text_from_pdf, extract_text_from_pdf
 
@@ -36,9 +37,11 @@ CURRENCY_CODES = {
     "EUR": ("EUR", "€"), "GBP": ("GBP", "£"), "AUD": ("A$", "AUD"),
 }
 TOTAL_LABELS = (
-    ("grand total", 1.00), ("invoice total", 0.98), ("total amount", 0.98),
-    ("amount due", 0.98), ("balance due", 0.97), ("total payable", 0.96),
-    ("net payable", 0.96), ("payment due", 0.93), ("total due", 0.93),
+    ("grand total", 1.00), ("total invoice value", 0.99), ("total amount", 0.98),
+    ("invoice total", 0.98), ("total payable", 0.98), ("net payable", 0.97),
+    ("amount due", 0.97), ("balance due", 0.96), ("total bill amount", 0.96),
+    ("total due", 0.95), ("gross total", 0.95), ("total value", 0.95),
+    ("net amount payable", 0.95), ("invoice value", 0.94), ("payment due", 0.93),
     ("total", 0.82),
 )
 
@@ -101,7 +104,7 @@ class InvoiceParser:
             if not available:
                 return ExtractionResult(
                     False,
-                        error="Unable to extract readable invoice text. This may be a scanned PDF, and OCR is unavailable on this machine.",
+                    error="Unable to extract readable invoice text. This may be a scanned PDF, and OCR is unavailable on this machine.",
                     error_code="OCR_UNAVAILABLE", method="ocr", warnings=warnings,
                 )
             return ExtractionResult(
@@ -126,11 +129,11 @@ class InvoiceParser:
     def _extract_fields(cls, text: str, method: str) -> tuple[Optional[ExtractedInvoice], list[str]]:
         number = cls._extract_invoice_number(text)
         invoice_date = cls._extract_labeled_date(
-            text, ("invoice date", "date of invoice", "issue date", "date of issue", "bill date", "document date", "date"),
+            text, ("invoice date", "date of invoice", "issue date", "date of issue", "bill date", "document date", "inv date", "date"),
         )
         terms, terms_confidence = cls._extract_payment_terms(text)
         due_date = cls._extract_labeled_date(
-            text, ("due date", "payment due", "due on", "pay by", "payment date"),
+            text, ("due date", "payment due date", "payment due", "due on", "pay by", "due by", "payment date"),
             not_before=invoice_date.value if invoice_date else None,
         )
         if not due_date and invoice_date and terms:
@@ -138,30 +141,75 @@ class InvoiceParser:
             if term_days is not None:
                 due_date = _Candidate(invoice_date.value + timedelta(days=term_days), 0.82)
         amount, currency = cls._extract_amount_and_currency(text)
-        customer_name, customer_ref, customer_confidence = cls._extract_customer(text)
+        customer_name, customer_ref, customer_gstin, customer_confidence = cls._extract_customer(text)
 
+        # Required extraction contract:
+        # 1. invoice_number
+        # 2. customer_name
+        # 3. invoice_date
+        # 4. total_amount
+        # 5. due_date (explicit OR derived from payment terms)
+        customer_candidate = (
+            _Candidate(customer_name, customer_confidence)
+            if customer_name and customer_confidence >= 0.6
+            else None
+        )
         required = {
-            "invoice number": number, "invoice date": invoice_date,
+            "invoice number": number,
+            "customer name": customer_candidate,
+            "invoice date": invoice_date,
             "due date or usable payment terms": due_date,
-            "invoice total": amount, "currency": currency,
+            "invoice total": amount,
         }
         missing = [name for name, value in required.items() if value is None]
         if missing:
             return None, missing
 
+        # Extract optional fields
+        seller_name, seller_gstin = cls._extract_seller(text, customer_name, customer_gstin)
+        subtotal, taxable_amount, cgst, sgst, igst = cls._extract_tax_breakdown(text)
+        po_number = cls._extract_po_number(text)
+
         field_confidence = {
-            "invoice_number": number.score, "invoice_date": invoice_date.score,
-            "due_date": due_date.score, "amount": amount.score, "currency": currency.score,
-            "payment_terms": terms_confidence, "customer_name": customer_confidence,
+            "invoice_number": number.score,
+            "customer_name": customer_confidence,
+            "invoice_date": invoice_date.score,
+            "due_date": due_date.score,
+            "amount": amount.score,
+            "payment_terms": terms_confidence,
         }
-        confidence = sum(field_confidence[name] for name in ("invoice_number", "invoice_date", "due_date", "amount", "currency")) / 5
+        if currency:
+            field_confidence["currency"] = currency.score
+
+        score_components = [number.score, customer_confidence, invoice_date.score, due_date.score, amount.score]
+        if currency:
+            score_components.append(currency.score)
+        confidence = sum(score_components) / len(score_components)
         if method == "ocr":
             confidence *= 0.85
+
         return ExtractedInvoice(
-            invoice_number=str(number.value), invoice_date=invoice_date.value, due_date=due_date.value,
-            amount=float(amount.value), currency=str(currency.value), customer_name=customer_name,
-            customer_ref=customer_ref, payment_terms=terms, extraction_method=method,
-            confidence=round(confidence, 3), field_confidence=field_confidence, raw_text=text[:4000],
+            invoice_number=str(number.value),
+            invoice_date=invoice_date.value,
+            due_date=due_date.value,
+            amount=float(amount.value),
+            currency=str(currency.value) if currency else None,
+            customer_name=customer_name,
+            customer_ref=customer_ref,
+            customer_gstin=customer_gstin,
+            seller_name=seller_name,
+            seller_gstin=seller_gstin,
+            subtotal=subtotal,
+            taxable_amount=taxable_amount,
+            cgst=cgst,
+            sgst=sgst,
+            igst=igst,
+            purchase_order_number=po_number,
+            payment_terms=terms,
+            extraction_method=method,
+            confidence=round(confidence, 3),
+            field_confidence=field_confidence,
+            raw_text=text[:4000],
         ), []
 
     @staticmethod
@@ -196,7 +244,10 @@ class InvoiceParser:
     def _extract_labeled_date(cls, text: str, labels: Iterable[str], not_before: Optional[date] = None) -> Optional[_Candidate]:
         candidates: list[_Candidate] = []
         for label_index, label in enumerate(labels):
-            pattern = rf"(?i)\b{re.escape(label)}\b\s*[:#-]?\s*({DATE_VALUE})"
+            if label.lower() == "date":
+                pattern = rf"(?i)(?<!\bdue\s)(?<!\bpayment\s)(?<!\bpay\s)(?<!\bexpiry\s)\bdate\b\s*[:#-]?\s*({DATE_VALUE})"
+            else:
+                pattern = rf"(?i)\b{re.escape(label)}\b\s*[:#-]?\s*({DATE_VALUE})"
             for match in re.finditer(pattern, text):
                 parsed = cls._parse_date_str(match.group(1))
                 if parsed:
@@ -222,7 +273,7 @@ class InvoiceParser:
     @staticmethod
     def _extract_payment_terms(text: str) -> tuple[Optional[str], float]:
         patterns = (
-            r"(?i)\b(?:payment\s+terms|terms\s+of\s+payment|credit\s+terms|terms)\b\s*[:#-]?\s*(net\s*\d{1,3}|due\s+on\s+receipt|cash\s+on\s+delivery|COD|\d{1,3}\s*(?:calendar\s+)?days?)",
+            r"(?i)\b(?:payment\s+terms|terms\s+of\s+payment|credit\s+terms|credit\s+period|terms)\b\s*[:#-]?\s*(net\s*\d{1,3}|due\s+on\s+receipt|cash\s+on\s+delivery|COD|\d{1,3}\s*(?:calendar\s+)?days?|within\s+\d{1,3}\s*days?)",
             r"(?i)\b(net\s*\d{1,3}|due\s+on\s+receipt|cash\s+on\s+delivery|COD)\b",
         )
         for index, pattern in enumerate(patterns):
@@ -249,7 +300,7 @@ class InvoiceParser:
         number = r"(?:\(?\s*)?\d+(?:,\d{2,3})*(?:\.\d{1,2})?"
         marker = r"(?:₹|\$|€|£|US\$|C\$|A\$|INR|USD|CAD|EUR|GBP|AUD|Rs\.?|Indian\s+Rupees?)?"
         for label, label_score in TOTAL_LABELS:
-            pattern = rf"(?i)\b{re.escape(label)}\b\s*[:#-]?\s*({marker})[^\d]{{0,16}}({number})\s*([A-Z]{{3}}|₹|\$|€|£|Rs\.?)?"
+            pattern = rf"(?i)\b{re.escape(label)}\b\s*[:#-]?\s*({marker})[^\d]{{0,24}}({number})\s*([A-Z]{{3}}|₹|\$|€|£|Rs\.?)?"
             for match in re.finditer(pattern, text):
                 parsed = cls._parse_money(match.group(2))
                 if parsed and parsed > 0:
@@ -288,29 +339,177 @@ class InvoiceParser:
         # literal capital I (U+0049) during native extraction; OCR drops it.
         # Treat this as INR only in this exact total-label + Indian grouping
         # context. It is never a global I-to-rupee substitution.
-        if re.search(r"(?i)(?:grand\s+total|invoice\s+total|amount\s+due|total)\D{0,16}[I�·]\s*\d{1,3}(?:,\d{2})*,\d{3}", text):
+        if re.search(r"(?i)(?:grand\s+total|invoice\s+total|amount\s+due|total)\D{0,16}[I·]\s*\d{1,3}(?:,\d{2})*,\d{3}", text):
             matches.append(_Candidate("INR", score - 0.05))
         return max(matches, key=lambda item: item.score, default=None)
 
     @staticmethod
-    def _extract_customer(text: str) -> tuple[Optional[str], Optional[str], float]:
+    def _extract_customer(text: str) -> tuple[Optional[str], Optional[str], Optional[str], float]:
         lines = [line.strip(" :#-") for line in text.splitlines()]
-        labels = re.compile(r"(?i)^(bill(?:ed)?\s+to|sold\s+to|invoice(?:d)?\s+to|customer|buyer|client)\b")
-        structural = re.compile(r"(?i)^(ship\s+to|bill\s+to|invoice|tax invoice|date|due|payment|terms|description|qty|quantity|amount|total|gstin)\b")
+        labels = re.compile(
+            r"(?i)^(?:details\s+of\s+(?:receiver|buyer|recipient)(?:\s*[|/]\s*(?:billed\s+to|bill\s+to))?"
+            r"|bill(?:ed)?\s+to(?:\s*\([^)]*\))?"
+            r"|buyer\s*\([^)]*\)(?:\s*(?:name|details))?"
+            r"|buyer(?:\s*(?:name|details))?"
+            r"|consignee\s*\((?:billed\s+to|bill\s+to)\)"
+            r"|customer(?:\s*(?:name|details))?|client(?:\s*(?:name|details))?"
+            r"|party\s+name|name\s+of\s+party"
+            r"|sold\s+to|invoice(?:d)?\s+to|recipient(?:\s*(?:name|details))?"
+            r"|m/s\.?|messrs\.?)\s*(?:\([^)]*\))?\s*[:#-]*"
+        )
+        structural = re.compile(
+            r"(?i)^(?:ship\s+to|shipped\s+to|consignee(?:\s*\([^)]*\))?"
+            r"|tax\s+invoice|invoice(?:\s+no\.?)?|bill\s+of\s+supply"
+            r"|date|due(?:\s+date)?|payment(?:\s+terms)?|terms"
+            r"|description|qty|quantity|amount|total|subtotal|sub\s+total|rate"
+            r"|gstin(?:\s*/\s*uin)?|pan(?:\s+no\.?)?|state(?:\s+code)?|cin(?:\s+no\.?)?"
+            r"|phone|email|contact|original\s+for\s+recipient|duplicate|triplicate)\b"
+        )
         name: Optional[str] = None
+        gstin: Optional[str] = None
         confidence = 0.0
+
         for index, line in enumerate(lines):
             if not labels.match(line):
                 continue
             inline = labels.sub("", line, count=1).strip(" :#-")
-            for candidate in [inline] + lines[index + 1:index + 7]:
-                if not candidate or structural.match(candidate):
+            candidates = [inline] + lines[index + 1:index + 8]
+            for candidate in candidates:
+                candidate_clean = candidate.strip(" :#-")
+                if not candidate_clean or structural.match(candidate_clean):
                     continue
-                if re.search(r"[A-Za-z]", candidate) and not re.fullmatch(r"[A-Z]{2,5}-?\d+", candidate):
-                    name = candidate[:255]
-                    confidence = 0.92 if candidate == inline else 0.82
+                # Skip standalone or parenthesized label lines like (Bill to), (Ship to)
+                if re.match(r"(?i)^\(?\s*(?:bill\s+to|billed\s+to|ship\s+to|shipped\s+to|buyer|consignee)\s*\)?$", candidate_clean):
+                    continue
+                clean_name = re.sub(r"(?i)^m/s\.?\s+", "", candidate_clean).strip()
+                clean_name = re.sub(r"(?i)^\(?\s*(?:bill\s+to|billed\s+to|ship\s+to|buyer)\s*\)?\s*", "", clean_name).strip(" :#-")
+                if (
+                    re.search(r"[A-Za-z]", clean_name)
+                    and not re.fullmatch(r"[A-Z]{2,5}-?\d+", clean_name)
+                    and len(clean_name) >= 2
+                    and not re.match(r"(?i)^(?:GSTIN|PAN|CIN|STATE|INV|PO|TEL|MOB|PH)[-:/]?", clean_name)
+                ):
+                    name = clean_name[:255]
+                    confidence = 0.94 if candidate == inline and inline else 0.86
                     break
+
             if name:
+                gstin_label = re.compile(
+                    r"(?i)\b(?:GSTIN(?:\s*/\s*UIN)?|GST\s+No\.?|GST\s+Identification\s+Number)"
+                    r"(?![A-Za-z])\s*[:#-]?\s*(.*)$"
+                )
+                customer_lines = lines[index:index + 9]
+                for offset, candidate_line in enumerate(customer_lines):
+                    match = gstin_label.search(candidate_line)
+                    if not match:
+                        continue
+                    val = match.group(1).strip()
+                    if not val and offset + 1 < len(customer_lines):
+                        val = customer_lines[offset + 1]
+                    compact = re.sub(r"\s+", "", val).upper()
+                    for possible in re.findall(r"[0-9A-Z]{15}", compact):
+                        if normalize_gstin(possible):
+                            gstin = possible
+                            break
+                    if gstin:
+                        break
                 break
-        ref_match = re.search(r"(?im)^\s*(?:customer|client|account)\s*(?:id|number|no\.?)\s*[:#-]?\s*([A-Z0-9][A-Z0-9_.-]{1,63})\s*$", text)
-        return name, ref_match.group(1).strip() if ref_match else None, confidence
+
+        ref_match = re.search(
+            r"(?im)^\s*(?:customer|client|account)\s*(?:id|number|no\.?)\s*[:#-]?\s*([A-Z0-9][A-Z0-9_.-]{1,63})\s*$",
+            text,
+        )
+        return name, ref_match.group(1).strip() if ref_match else None, gstin, confidence
+
+    @staticmethod
+    def _extract_seller(
+        text: str,
+        customer_name: Optional[str] = None,
+        customer_gstin: Optional[str] = None,
+    ) -> tuple[Optional[str], Optional[str]]:
+        lines = [line.strip(" :#-") for line in text.splitlines() if line.strip(" :#-")]
+        seller_labels = re.compile(
+            r"(?i)^(?:seller(?:\s*(?:name|details))?|supplier(?:\s*(?:name|details))?"
+            r"|consignor(?:\s*(?:name|details))?|from|sold\s+by|biller)\b"
+        )
+        seller_name = None
+        seller_gstin = None
+
+        # Look for explicit seller label
+        for index, line in enumerate(lines):
+            if seller_labels.match(line):
+                inline = seller_labels.sub("", line, count=1).strip(" :#-")
+                for candidate in [inline] + lines[index + 1:index + 5]:
+                    if not candidate:
+                        continue
+                    clean = re.sub(r"(?i)^m/s\.?\s+", "", candidate).strip()
+                    if re.search(r"[A-Za-z]", clean) and len(clean) >= 2:
+                        if not customer_name or clean.casefold() != customer_name.casefold():
+                            seller_name = clean[:255]
+                            break
+                if seller_name:
+                    break
+
+        # Fallback to inspecting top header lines before buyer block
+        if not seller_name and lines:
+            header_skip = re.compile(
+                r"(?i)^(?:tax\s+invoice|invoice|bill\s+of\s+supply|original\s+for\s+recipient"
+                r"|duplicate|triplicate|quotation|estimate|proforma)\b"
+            )
+            for line in lines[:5]:
+                if header_skip.match(line):
+                    continue
+                clean = re.sub(r"(?i)^m/s\.?\s+", "", line).strip()
+                if (
+                    re.search(r"[A-Za-z]", clean)
+                    and len(clean) >= 3
+                    and not re.search(r"(?i)^(?:bill\s+to|buyer|ship\s+to|date|invoice\s+no|gstin)", clean)
+                ):
+                    if not customer_name or clean.casefold() != customer_name.casefold():
+                        seller_name = clean[:255]
+                        break
+
+        # Locate seller GSTIN distinct from customer GSTIN
+        for match in re.finditer(r"(?i)\b(?:GSTIN(?:\s*/\s*UIN)?|GST\s+No\.?)\s*[:#-]?\s*([0-9A-Z]{15})\b", text):
+            candidate_gstin = match.group(1).upper()
+            if normalize_gstin(candidate_gstin):
+                if not customer_gstin or candidate_gstin != customer_gstin:
+                    seller_gstin = candidate_gstin
+                    break
+
+        return seller_name, seller_gstin
+
+    @classmethod
+    def _extract_tax_breakdown(cls, text: str) -> tuple[Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]:
+        subtotal = None
+        taxable_amount = None
+        cgst = None
+        sgst = None
+        igst = None
+
+        taxable_m = re.search(r"(?i)\b(?:taxable\s+value|taxable\s+amount)\b\s*[:#-]?\s*(?:INR|Rs\.?|₹|\$)?\s*([0-9]+(?:,[0-9]{2,3})*(?:\.[0-9]{1,2})?)", text)
+        if taxable_m:
+            taxable_amount = cls._parse_money(taxable_m.group(1))
+
+        subtotal_m = re.search(r"(?i)\b(?:sub\s*total)\b\s*[:#-]?\s*(?:INR|Rs\.?|₹|\$)?\s*([0-9]+(?:,[0-9]{2,3})*(?:\.[0-9]{1,2})?)", text)
+        if subtotal_m:
+            subtotal = cls._parse_money(subtotal_m.group(1))
+
+        cgst_m = re.search(r"(?i)\b(?:cgst|central\s+gst)\b(?:\s*@\s*\d+(?:\.\d+)?%?)?\s*[:#-]?\s*(?:INR|Rs\.?|₹|\$)?\s*([0-9]+(?:,[0-9]{2,3})*(?:\.[0-9]{1,2})?)", text)
+        if cgst_m:
+            cgst = cls._parse_money(cgst_m.group(1))
+
+        sgst_m = re.search(r"(?i)\b(?:sgst|state\s+gst)\b(?:\s*@\s*\d+(?:\.\d+)?%?)?\s*[:#-]?\s*(?:INR|Rs\.?|₹|\$)?\s*([0-9]+(?:,[0-9]{2,3})*(?:\.[0-9]{1,2})?)", text)
+        if sgst_m:
+            sgst = cls._parse_money(sgst_m.group(1))
+
+        igst_m = re.search(r"(?i)\b(?:igst|integrated\s+gst)\b(?:\s*@\s*\d+(?:\.\d+)?%?)?\s*[:#-]?\s*(?:INR|Rs\.?|₹|\$)?\s*([0-9]+(?:,[0-9]{2,3})*(?:\.[0-9]{1,2})?)", text)
+        if igst_m:
+            igst = cls._parse_money(igst_m.group(1))
+
+        return subtotal, taxable_amount, cgst, sgst, igst
+
+    @staticmethod
+    def _extract_po_number(text: str) -> Optional[str]:
+        po_m = re.search(r"(?i)\b(?:p\.?o\.?\s*(?:number|no\.?|#)|purchase\s+order(?:\s+(?:number|no\.?|#))?|order\s+no\.?)\s*[:#-]?\s*([A-Za-z0-9/_-]{2,40})\b", text)
+        return po_m.group(1).strip() if po_m else None

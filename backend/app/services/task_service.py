@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from backend.app.core.config import settings
 from backend.app.models.task import Task
 from backend.app.models.invoice_document import InvoiceDocument
+from backend.app.models.payment_proof import PaymentProof
 
 logger = logging.getLogger(__name__)
 
@@ -187,14 +188,20 @@ def recover_stale_processing_tasks(db: Session) -> int:
     )
 
     document_ids: list[uuid.UUID] = []
+    proof_ids: list[uuid.UUID] = []
     for task in stale_tasks:
-        if task.task_type != "parse_invoice":
-            continue
-        raw_id = (task.payload or {}).get("invoice_document_id")
-        try:
-            document_ids.append(uuid.UUID(str(raw_id)))
-        except (TypeError, ValueError):
-            continue
+        if task.task_type == "parse_invoice":
+            raw_id = (task.payload or {}).get("invoice_document_id")
+            try:
+                document_ids.append(uuid.UUID(str(raw_id)))
+            except (TypeError, ValueError):
+                continue
+        elif task.task_type == "parse_payment_proof":
+            raw_id = (task.payload or {}).get("proof_id")
+            try:
+                proof_ids.append(uuid.UUID(str(raw_id)))
+            except (TypeError, ValueError):
+                continue
 
     if document_ids:
         db.execute(
@@ -205,6 +212,18 @@ def recover_stale_processing_tasks(db: Session) -> int:
             )
             .values(
                 processing_status="PENDING",
+                error_message="Processing was interrupted and has been queued for retry.",
+            )
+        )
+    if proof_ids:
+        db.execute(
+            update(PaymentProof)
+            .where(
+                PaymentProof.id.in_(proof_ids),
+                PaymentProof.status == "PROCESSING",
+            )
+            .values(
+                status="PENDING",
                 error_message="Processing was interrupted and has been queued for retry.",
             )
         )

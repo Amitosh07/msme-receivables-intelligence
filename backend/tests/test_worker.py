@@ -24,6 +24,7 @@ from backend.app.models.invoice_document import InvoiceDocument
 from backend.app.models.payment import Payment
 from backend.app.models.task import Task
 from backend.app.models.user import User
+from backend.app.services.customer_identity import create_customer
 from backend.app.services.parser.base import TransientParserError
 from backend.app.services.storage import get_storage
 from backend.app.services.task_service import create_task
@@ -117,6 +118,14 @@ class TestWorkerService(unittest.TestCase):
         Worker dequeues, claims, parses, creates Invoice, links Customer,
         and marks Task COMPLETED.
         """
+        expected_customer = create_customer(
+            self.db,
+            business_id=self.business_a_id,
+            display_name="Global Logistics Inc",
+            customer_ref="CUST-GL-01",
+        )
+        self.db.commit()
+
         invoice_text = (
             "TAX INVOICE\n"
             "Invoice #: INV-WKR-101\n"
@@ -181,6 +190,7 @@ class TestWorkerService(unittest.TestCase):
         # 7. Verify Customer was linked
         customer = self.db.get(Customer, invoice.customer_id)
         self.assertIsNotNone(customer)
+        self.assertEqual(customer.id, expected_customer.id)
         self.assertEqual(customer.name, "Global Logistics Inc")
         self.assertEqual(customer.customer_ref, "CUST-GL-01")
 
@@ -241,6 +251,82 @@ class TestWorkerService(unittest.TestCase):
         )))
         self.assertEqual(invoices_count_after, 1)
 
+    def test_unmatched_parsed_customer_uses_explicit_unresolved_contract(self):
+        invoice_text = (
+            "TAX INVOICE\n"
+            "Invoice #: INV-UNRESOLVED-01\n"
+            "Bill To: Unmatched Precision Works Pvt Ltd\n"
+            "Invoice Date: 2025-05-01\n"
+            "Due Date: 2025-05-31\n"
+            "Total Amount: INR 5,000.00\n"
+        )
+        pdf_bytes = _create_sample_pdf(invoice_text)
+        response = self.client.post(
+            "/invoices/upload",
+            files={"file": ("unresolved.pdf", io.BytesIO(pdf_bytes), "application/pdf")},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        doc = self.db.get(InvoiceDocument, uuid.UUID(response.json()["document_id"]))
+        self.uploaded_keys.append(doc.storage_key)
+        self.worker.process_one_task(timeout=1)
+
+        self.db.expire_all()
+        invoice = self.db.scalar(
+            select(Invoice).where(
+                Invoice.business_id == self.business_a_id,
+                Invoice.invoice_number == "INV-UNRESOLVED-01",
+            )
+        )
+        self.assertIsNone(invoice.customer_id)
+        self.assertEqual(invoice.unresolved_customer_name, "Unmatched Precision Works Pvt Ltd")
+        speculative = self.db.scalar(
+            select(Customer).where(
+                Customer.business_id == self.business_a_id,
+                Customer.normalized_name == "unmatched precision works private limited",
+            )
+        )
+        self.assertIsNone(speculative)
+
+    def test_parsed_invoice_without_customer_information_fails_parsing(self):
+        invoice_text = (
+            "TAX INVOICE\n"
+            "Invoice #: INV-NO-CUSTOMER-01\n"
+            "Invoice Date: 2025-05-01\n"
+            "Due Date: 2025-05-31\n"
+            "Total Amount: INR 5,000.00\n"
+        )
+        pdf_bytes = _create_sample_pdf(invoice_text)
+        response = self.client.post(
+            "/invoices/upload",
+            files={"file": ("no_customer.pdf", io.BytesIO(pdf_bytes), "application/pdf")},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        doc_id = uuid.UUID(response.json()["document_id"])
+        doc = self.db.get(InvoiceDocument, doc_id)
+        self.uploaded_keys.append(doc.storage_key)
+        self.worker.process_one_task(timeout=1)
+
+        self.db.expire_all()
+        doc = self.db.get(InvoiceDocument, doc_id)
+        self.assertEqual(doc.processing_status, "ERROR")
+        self.assertIn("customer name", (doc.error_message or "").lower())
+
+        # Also verify that if an invoice has both customer fields null directly, the schema permits it
+        invoice = Invoice(
+            business_id=self.business_a_id,
+            invoice_number="INV-DIRECT-NULL-CUST",
+            invoice_date=date(2025, 5, 1),
+            due_date=date(2025, 5, 31),
+            amount=5000.0,
+            currency="INR",
+            customer_id=None,
+            unresolved_customer_name=None,
+        )
+        self.db.add(invoice)
+        self.db.commit()
+        self.assertIsNone(invoice.customer_id)
+        self.assertIsNone(invoice.unresolved_customer_name)
+
     def test_payment_reconciliation_on_parse(self):
         """
         When an invoice is parsed and matching historical payments exist
@@ -255,6 +341,7 @@ class TestWorkerService(unittest.TestCase):
             payment_date=datetime.now(timezone.utc),
             reference="WIRE-9921",
             invoice_id=None,
+            provenance="legacy",
         )
         self.db.add(payment)
         self.db.commit()

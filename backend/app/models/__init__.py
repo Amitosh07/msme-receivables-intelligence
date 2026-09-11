@@ -11,6 +11,7 @@ from backend.app.models.invoice import Invoice
 from backend.app.models.invoice_document import InvoiceDocument
 from backend.app.models.membership import Membership
 from backend.app.models.payment import Payment
+from backend.app.models.payment_proof import PaymentProof
 from backend.app.models.prediction import PredictionResult
 from backend.app.models.task import Task
 from backend.app.models.user import User
@@ -25,6 +26,7 @@ __all__ = [
     "InvoiceDocument",
     "Membership",
     "Payment",
+    "PaymentProof",
     "PredictionResult",
     "Task",
     "User",

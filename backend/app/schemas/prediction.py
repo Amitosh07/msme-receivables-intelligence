@@ -3,13 +3,15 @@ Pydantic schemas for PredictionResult entities and scoring responses.
 """
 
 from datetime import date, datetime
-from typing import List, Optional
+from typing import List, Literal, Optional, Union
 import uuid
 from pydantic import BaseModel, ConfigDict, Field
 
 
 class PredictionResponse(BaseModel):
     """Output prediction data for an invoice."""
+    prediction_available: Literal[True] = True
+    reason: None = None
     id: uuid.UUID
     business_id: uuid.UUID
     invoice_id: uuid.UUID
@@ -23,6 +25,19 @@ class PredictionResponse(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class PredictionUnavailableResponse(BaseModel):
+    """Expected response when the customer lacks sufficient prior outcomes."""
+
+    prediction_available: Literal[False] = False
+    reason: str
+    invoice_id: uuid.UUID
+    eligible_history_count: int
+    required_history_count: int
+
+
+PredictionOperationResponse = Union[PredictionResponse, PredictionUnavailableResponse]
 
 
 class PredictionListResponse(BaseModel):

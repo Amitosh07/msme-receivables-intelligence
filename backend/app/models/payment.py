@@ -7,7 +7,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
-from sqlalchemy import DateTime, ForeignKey, Numeric, String, func
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -59,10 +59,34 @@ class Payment(Base):
         String(128),
         nullable=True,
     )
+    customer_identity_key: Mapped[str | None] = mapped_column(
+        String(320),
+        nullable=True,
+    )
+    provenance: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+    )
+    note: Mapped[str | None] = mapped_column(
+        String(512),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_payment_natural_key",
+            "business_id",
+            "customer_identity_key",
+            text("lower(btrim(coalesce(invoice_reference, '')))"),
+            "payment_date",
+            "amount",
+            unique=True,
+        ),
     )
 
     # Relationships

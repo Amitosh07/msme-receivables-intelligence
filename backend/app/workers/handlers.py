@@ -8,7 +8,6 @@ from typing import Any, Dict
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from backend.app.models.customer import Customer
 from backend.app.models.invoice import Invoice
 from backend.app.models.invoice_document import InvoiceDocument
 from backend.app.models.payment import Payment
@@ -18,6 +17,7 @@ from backend.app.services.parser import (
     PermanentParserError,
     TransientParserError,
 )
+from backend.app.services.customer_identity import resolve_customer_identity
 from backend.app.services.storage import StorageError, StorageFileNotFoundError, get_storage
 
 logger = logging.getLogger(__name__)
@@ -118,33 +118,8 @@ def handle_parse_invoice(
 
     extracted = result.invoice
 
-    # 6. Customer matching / creation
-    customer = None
-    if extracted.customer_ref:
-        customer = db.scalar(
-            select(Customer).where(
-                Customer.business_id == task.business_id,
-                Customer.customer_ref == extracted.customer_ref,
-            )
-        )
-    if not customer and extracted.customer_name:
-        customer = db.scalar(
-            select(Customer).where(
-                Customer.business_id == task.business_id,
-                Customer.name == extracted.customer_name,
-            )
-        )
-    if not customer:
-        customer_name = extracted.customer_name or f"Customer {extracted.invoice_number}"
-        customer = Customer(
-            business_id=task.business_id,
-            name=customer_name,
-            customer_ref=extracted.customer_ref,
-        )
-        db.add(customer)
-        db.flush()
-
-    # 7. Invoice creation & duplicate handling
+    # 6. Locate the natural invoice key before identity resolution so an
+    # already-confirmed customer_id remains the strongest evidence on retries.
     existing_inv = db.scalar(
         select(Invoice).where(
             Invoice.business_id == task.business_id,
@@ -152,15 +127,36 @@ def handle_parse_invoice(
         )
     )
 
+    payload_customer_id = None
+    if payload.get("customer_id"):
+        try:
+            payload_customer_id = uuid.UUID(str(payload["customer_id"]))
+        except ValueError:
+            payload_customer_id = None
+
+    identity = resolve_customer_identity(
+        db,
+        business_id=task.business_id,
+        customer_id=existing_inv.customer_id if existing_inv else payload_customer_id,
+        gstin=extracted.customer_gstin,
+        customer_ref=extracted.customer_ref,
+        display_name=extracted.customer_name,
+    )
+    customer = identity.customer
+    unresolved_customer_name = None if customer else extracted.customer_name
+
+    # 7. Invoice creation & duplicate handling
+
     if existing_inv:
         invoice = existing_inv
         # A retry or a second document for the same natural invoice key must
         # converge on the same row while still repairing incomplete state.
-        invoice.customer_id = customer.id
+        invoice.customer_id = customer.id if customer else None
+        invoice.unresolved_customer_name = unresolved_customer_name
         invoice.invoice_date = extracted.invoice_date
         invoice.due_date = extracted.due_date
         invoice.amount = extracted.amount
-        invoice.currency = extracted.currency
+        invoice.currency = extracted.currency or "INR"
         invoice.payment_terms = extracted.payment_terms
         invoice.processing_status = "PROCESSED"
         if invoice.document_id is None:
@@ -170,18 +166,21 @@ def handle_parse_invoice(
             extracted.invoice_number,
         )
     else:
+        origin_val = (doc.origin if doc and doc.origin else None) or payload.get("origin") or "CURRENT"
         invoice = Invoice(
             id=uuid.uuid4(),
             business_id=task.business_id,
-            customer_id=customer.id,
+            customer_id=customer.id if customer else None,
+            unresolved_customer_name=unresolved_customer_name,
             invoice_number=extracted.invoice_number,
             invoice_date=extracted.invoice_date,
             due_date=extracted.due_date,
             amount=extracted.amount,
-            currency=extracted.currency,
+            currency=extracted.currency or "INR",
             payment_terms=extracted.payment_terms,
             payment_status="OPEN",
             processing_status="PROCESSED",
+            origin=origin_val,
             document_id=doc.id,
         )
         db.add(invoice)
@@ -252,6 +251,7 @@ def handle_predict_invoice(
         )
 
     from backend.app.services.prediction_service import (
+        InsufficientCustomerHistoryError,
         InvoiceNotReadyError,
         PredictionServiceError,
         predict_for_invoice,
@@ -273,8 +273,75 @@ def handle_predict_invoice(
             prediction.risk_tier,
             prediction.predicted_days_until_payment,
         )
+    except InsufficientCustomerHistoryError as e:
+        task.invoice_id = invoice.id
+        db.commit()
+        logger.info(
+            "Task %s: Prediction unavailable for invoice %s: %s "
+            "(eligible_history_count=%d, required=%d)",
+            task.id,
+            invoice.id,
+            e,
+            e.eligible_history_count,
+            e.required_history_count,
+        )
     except (InvoiceNotReadyError, PredictionServiceError) as e:
         raise PermanentParserError(f"Cannot score invoice {invoice_id}: {e}") from e
     except Exception as e:
         logger.error("Error scoring invoice %s: %s", invoice_id, e)
         raise
+
+
+def handle_parse_payment_proof(
+    db: Session,
+    task: Task,
+    payload: Dict[str, Any],
+) -> None:
+    """
+    Handler for 'parse_payment_proof' task type.
+    Extracts structured payment proof data, verifies against target invoice & tenant customer,
+    creates real Payment with provenance='proof_verified' if unambiguous, or transitions to NEEDS_REVIEW/FAILED.
+    """
+    proof_id_str = payload.get("proof_id")
+    invoice_id_str = payload.get("invoice_id")
+    business_id_str = payload.get("business_id")
+    if not proof_id_str:
+        raise PermanentParserError("Missing 'proof_id' in task payload.")
+    if not invoice_id_str or not business_id_str:
+        raise PermanentParserError("Payment proof task is missing tenant or target-invoice context.")
+
+    try:
+        proof_id = uuid.UUID(str(proof_id_str))
+    except ValueError as e:
+        raise PermanentParserError(f"Invalid UUID for proof_id: {proof_id_str}") from e
+    try:
+        payload_invoice_id = uuid.UUID(str(invoice_id_str))
+        payload_business_id = uuid.UUID(str(business_id_str))
+    except ValueError as e:
+        raise PermanentParserError("Invalid UUID in payment proof task context.") from e
+
+    from backend.app.models.payment_proof import PaymentProof
+    from backend.app.services.payment_proof_service import verify_and_process_proof
+
+    proof = db.get(PaymentProof, proof_id)
+    if not proof:
+        raise PermanentParserError(f"Payment proof {proof_id} not found in database.")
+
+    if proof.business_id != task.business_id:
+        raise PermanentParserError(
+            f"Tenant boundary violation: task business {task.business_id} "
+            f"does not match proof business {proof.business_id}."
+        )
+    if payload_business_id != task.business_id or proof.invoice_id != payload_invoice_id:
+        raise PermanentParserError("Payment proof task target does not match its persisted tenant context.")
+
+    # Process and verify
+    result = verify_and_process_proof(db, proof_id=proof.id)
+    task.invoice_id = result.invoice_id
+    if result.status == "FAILED":
+        raise PermanentParserError(result.error_message or "Payment proof verification failed.")
+    db.commit()
+    logger.info(
+        "Task %s: Completed processing proof %s with status %s",
+        task.id, proof.id, result.status,
+    )

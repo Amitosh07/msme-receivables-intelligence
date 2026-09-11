@@ -6,18 +6,34 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
-from typing import TYPE_CHECKING, List, Optional
-from sqlalchemy import Date, ForeignKey, Numeric, String, UniqueConstraint
+from enum import Enum
+from typing import TYPE_CHECKING
+
+from sqlalchemy import (
+    CheckConstraint,
+    Date,
+    ForeignKey,
+    Index,
+    Numeric,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.models.base import Base, TimestampMixin
 
+
+class InvoiceOrigin(str, Enum):
+    HISTORICAL = "HISTORICAL"
+    CURRENT = "CURRENT"
+
 if TYPE_CHECKING:
     from backend.app.models.business import Business
     from backend.app.models.customer import Customer
-    from backend.app.models.payment import Payment
     from backend.app.models.invoice_document import InvoiceDocument
+    from backend.app.models.payment import Payment
+    from backend.app.models.payment_proof import PaymentProof
     from backend.app.models.prediction import PredictionResult
     from backend.app.models.task import Task
 
@@ -31,6 +47,15 @@ class Invoice(Base, TimestampMixin):
     __tablename__ = "invoices"
     __table_args__ = (
         UniqueConstraint("business_id", "invoice_number", name="uq_business_invoice_number"),
+        CheckConstraint(
+            "customer_id IS NULL OR unresolved_customer_name IS NULL",
+            name="ck_invoice_customer_resolution",
+        ),
+        CheckConstraint(
+            "origin IN ('HISTORICAL', 'CURRENT')",
+            name="ck_invoices_origin",
+        ),
+        Index("ix_invoices_business_origin", "business_id", "origin"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -44,11 +69,15 @@ class Invoice(Base, TimestampMixin):
         nullable=False,
         index=True,
     )
-    customer_id: Mapped[uuid.UUID] = mapped_column(
+    customer_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("customers.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
         index=True,
+    )
+    unresolved_customer_name: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
     )
     invoice_number: Mapped[str] = mapped_column(
         String(64),
@@ -86,6 +115,12 @@ class Invoice(Base, TimestampMixin):
         nullable=False,
         default="PENDING",
     )
+    origin: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=InvoiceOrigin.CURRENT.value,
+        server_default=InvoiceOrigin.CURRENT.value,
+    )
     document_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("invoice_documents.id", ondelete="SET NULL"),
@@ -94,30 +129,35 @@ class Invoice(Base, TimestampMixin):
 
     # Relationships
     business: Mapped[Business] = relationship("Business", back_populates="invoices")
-    customer: Mapped[Customer] = relationship("Customer", back_populates="invoices")
-    payments: Mapped[List[Payment]] = relationship(
+    customer: Mapped[Customer | None] = relationship("Customer", back_populates="invoices")
+    payments: Mapped[list[Payment]] = relationship(
         "Payment",
         back_populates="invoice",
         cascade="all, delete-orphan",
     )
-    predictions: Mapped[List[PredictionResult]] = relationship(
+    predictions: Mapped[list[PredictionResult]] = relationship(
         "PredictionResult",
         back_populates="invoice",
         cascade="all, delete-orphan",
     )
-    documents: Mapped[List[InvoiceDocument]] = relationship(
+    documents: Mapped[list[InvoiceDocument]] = relationship(
         "InvoiceDocument",
         back_populates="invoice",
         foreign_keys="[InvoiceDocument.invoice_id]",
         cascade="all, delete-orphan",
     )
-    document: Mapped[Optional[InvoiceDocument]] = relationship(
+    document: Mapped[InvoiceDocument | None] = relationship(
         "InvoiceDocument",
         foreign_keys=[document_id],
         post_update=True,
     )
-    tasks: Mapped[List[Task]] = relationship(
+    tasks: Mapped[list[Task]] = relationship(
         "Task",
+        back_populates="invoice",
+        cascade="all, delete-orphan",
+    )
+    payment_proofs: Mapped[list[PaymentProof]] = relationship(
+        "PaymentProof",
         back_populates="invoice",
         cascade="all, delete-orphan",
     )

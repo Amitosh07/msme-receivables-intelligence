@@ -10,10 +10,19 @@ from sqlalchemy.orm import Session
 
 from backend.app.core.dependencies import TenantContext, get_tenant_context
 from backend.app.db.session import get_db
-from backend.app.schemas.prediction import PredictionListResponse, PredictionResponse
+from backend.app.schemas.prediction import (
+    PredictionListResponse,
+    PredictionOperationResponse,
+    PredictionResponse,
+    PredictionUnavailableResponse,
+)
 from backend.app.services.prediction_service import (
+    INSUFFICIENT_HISTORY_REASON,
+    InsufficientCustomerHistoryError,
     InvoiceNotReadyError,
+    MIN_CUSTOMER_HISTORY_FOR_PREDICTION,
     PredictionServiceError,
+    get_prediction_eligibility,
     get_prediction_for_invoice,
     list_predictions_for_tenant,
     predict_for_invoice,
@@ -24,23 +33,38 @@ router = APIRouter(prefix="", tags=["Predictions"])
 
 @router.get(
     "/invoices/{invoice_id}/prediction",
-    response_model=PredictionResponse,
+    response_model=PredictionOperationResponse,
     summary="Get prediction result for a specific invoice",
 )
 def get_invoice_prediction(
     invoice_id: uuid.UUID,
     tenant_ctx: TenantContext = Depends(get_tenant_context),
     db: Session = Depends(get_db),
-) -> PredictionResponse:
+) -> PredictionOperationResponse:
     """
     Retrieve the payment delay prediction and timing estimation for an invoice.
     Enforces tenant isolation: users can only view predictions for their business.
     """
-    pred = get_prediction_for_invoice(
-        db=db,
-        business_id=tenant_ctx.business_id,
-        invoice_id=invoice_id,
-    )
+    try:
+        eligibility = get_prediction_eligibility(
+            db=db,
+            business_id=tenant_ctx.business_id,
+            invoice_id=invoice_id,
+        )
+        pred = get_prediction_for_invoice(
+            db=db,
+            business_id=tenant_ctx.business_id,
+            invoice_id=invoice_id,
+        )
+    except PredictionServiceError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    if not eligibility.prediction_available:
+        return PredictionUnavailableResponse(
+            reason=INSUFFICIENT_HISTORY_REASON,
+            invoice_id=invoice_id,
+            eligible_history_count=eligibility.eligible_history_count,
+            required_history_count=MIN_CUSTOMER_HISTORY_FOR_PREDICTION,
+        )
     if not pred:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -51,14 +75,14 @@ def get_invoice_prediction(
 
 @router.post(
     "/invoices/{invoice_id}/predict",
-    response_model=PredictionResponse,
+    response_model=PredictionOperationResponse,
     summary="Trigger ML prediction for an invoice",
 )
 def generate_invoice_prediction(
     invoice_id: uuid.UUID,
     tenant_ctx: TenantContext = Depends(get_tenant_context),
     db: Session = Depends(get_db),
-) -> PredictionResponse:
+) -> PredictionOperationResponse:
     """
     Generates and persists a V1 ML prediction for an invoice.
     Computes leakage-safe as-of customer features and executes classifier and timing models.
@@ -70,6 +94,13 @@ def generate_invoice_prediction(
             business_id=tenant_ctx.business_id,
         )
         return PredictionResponse.model_validate(pred)
+    except InsufficientCustomerHistoryError as exc:
+        return PredictionUnavailableResponse(
+            reason=str(exc),
+            invoice_id=exc.invoice_id,
+            eligible_history_count=exc.eligible_history_count,
+            required_history_count=exc.required_history_count,
+        )
     except InvoiceNotReadyError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

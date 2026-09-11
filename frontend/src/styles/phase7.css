@@ -1,2 +1,95 @@
 .metric{background:#f2f7f6!important;border-color:#d1d9d9!important;text-align:left;cursor:pointer}.metric:hover{border-color:#1d4f49!important;background:#edf5f3!important}.metric svg{color:#1d4f49}.sparkline{grid-column:span 2;width:90px;height:20px;margin-top:4px}.sparkline path{fill:none;stroke:#1d4f49;stroke-width:1.6}.invoice-row{cursor:pointer}.invoice-row:hover,.invoice-row:focus{background:#edf5f3;outline:0}.direction{border:0;background:transparent;color:#1d4f49;padding:3px}.aging-bar{display:flex;height:38px;overflow:hidden;border-radius:4px;background:#edf1ed}.aging-bar button{min-width:0;border:0;color:#fff;background:#6f9688;font-size:10px}.aging-bar button:nth-child(2){background:#bf9560}.aging-bar button:nth-child(3){background:#aa7550}.aging-bar button:nth-child(4){background:#925d43}.aging-bar button:nth-child(5){background:#704539}.aging-legend{display:flex;flex-wrap:wrap;gap:7px;margin-top:15px}.aging-legend button{border:0;background:transparent;padding:0;color:#586860;font-size:10px}.aging-legend i{display:inline-block;width:7px;height:7px;background:#6f9688}.projection{height:165px;display:flex;gap:8px;align-items:end;border-bottom:1px solid #d9e1dc;padding:12px 8px 24px;position:relative}.projection-point{background:#4f8474;min-width:12px;flex:1;position:relative}.projection-point:hover,.projection-point:focus{background:#1d4f49;outline:2px solid #1d4f49}.projection-tip{display:none;position:absolute;bottom:calc(100% + 7px);left:0;z-index:2;width:210px;padding:8px;background:#172022;color:#fff;font-size:10px;white-space:pre-line}.projection-point:hover .projection-tip,.projection-point:focus .projection-tip{display:block}.projection-axis{position:absolute;bottom:5px;left:8px;color:#71807a;font-size:10px}.password-input{display:flex;border:1px solid #cfd8d0;border-radius:5px;background:#f9fafb}.password-input input{border:0!important;flex:1}.password-input button{border:0;background:transparent;color:#47645b;padding:0 10px}.auth-options{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#52615a}.auth-options label{display:flex;gap:6px;align-items:center}.recovery{font-size:11px!important;margin:0!important;padding:9px;background:#f2f7f6;color:#49645b!important}.product-mock{width:min(370px,100%);margin:auto auto 34px;border:1px solid #49655c;background:#213e37;padding:17px;display:grid;gap:10px;font-size:11px;color:#b8c8c0}.product-mock>div:not(.mini-flow){display:flex;justify-content:space-between;padding:10px;background:#294941}.product-mock b{color:#d5e7dd}.mini-flow{display:flex;align-items:end;gap:7px;height:48px;padding:8px;background:#294941}.mini-flow i{width:18%;background:#86ad9c}.mini-flow i:nth-child(2){height:55%}.mini-flow i:nth-child(3){height:85%}.mini-flow i:nth-child(4){height:42%}.product-mock small{color:#a7b7af}.clear-filter{margin:-12px 0 12px}
 .auth aside{justify-content:center}.auth-introduction{width:min(390px,100%);margin:-25px auto 0;display:flex;flex-direction:column;align-items:stretch}.auth-introduction .product-mock{width:100%;margin:0 0 28px}.auth-introduction>p{margin:0 0 12px}.auth-introduction>span{max-width:370px}
+
+/* Phase D — Manual Payment Workflow */
+.payment-summary{margin-top:1.25rem;padding:1rem;background:#f2f7f6;border:1px solid #d9e1dc;border-radius:6px}
+.payment-summary h3{display:flex;align-items:center;gap:6px;margin:0 0 .75rem;font-size:13px;font-weight:600;color:#1d4f49}
+.payment-summary dl{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;margin:0}
+.payment-summary dt{font-size:11px;color:#71807a}
+.payment-summary dd{font-size:13px;font-weight:600;margin:0 0 6px}
+
+.payment-form-panel{margin-top:1rem;padding:1rem;background:#fff;border:1px solid #c5d0c9;border-radius:6px;display:flex;flex-direction:column;gap:.75rem}
+.payment-form-header{display:flex;justify-content:space-between;align-items:center}
+.payment-form-header h3{margin:0;font-size:14px;font-weight:600;color:#1d4f49}
+.icon-button{border:0;background:transparent;cursor:pointer;color:#71807a;padding:2px;border-radius:4px}
+.icon-button:hover{color:#1d4f49;background:#edf5f3}
+.payment-form-panel label{display:flex;flex-direction:column;gap:4px}
+.payment-form-panel label span{font-size:11px;font-weight:500;color:#47645b}
+.payment-form-panel label small{font-weight:400;color:#8a9b93}
+.payment-form-panel input{padding:8px 10px;border:1px solid #cfd8d0;border-radius:5px;font-size:13px;background:#f9fafb;font-family:inherit}
+.payment-form-panel input:focus{outline:2px solid #1d4f49;border-color:#1d4f49;background:#fff}
+.payment-form-panel.success-state{flex-direction:row;align-items:center;gap:10px;background:#edf8f0;border-color:#8dc4a0;color:#1d6b3a;font-weight:600;font-size:13px;justify-content:center;padding:1.25rem}
+
+.payment-history{margin-top:1.25rem}
+.payment-history h3{display:flex;align-items:center;gap:6px;margin:0 0 .75rem;font-size:13px;font-weight:600;color:#1d4f49}
+.payment-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.payment-row{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#f9fafb;border:1px solid #e5eae6;border-radius:5px;font-size:12px}
+.payment-row>div{display:flex;align-items:center;gap:8px}
+.payment-row strong{font-size:13px;font-weight:600}
+.payment-row small{color:#71807a;font-size:11px}
+
+/* Phase E — Payment Proof Styles */
+.payment-action-buttons{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:1rem}
+.proof-dropzone{border:2px dashed #cfd8d0;border-radius:6px;background:#fafbfc;cursor:pointer;transition:border-color .15s}
+.proof-dropzone:hover{border-color:#1d4f49;background:#f2f7f6}
+.dropzone-label{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:24px 16px;cursor:pointer;text-align:center}
+.dropzone-label svg{color:#47645b;margin-bottom:4px}
+.dropzone-label strong{font-size:13px;color:#1d4f49}
+.dropzone-label span{font-size:11px;color:#71807a}
+
+.proof-status-card{display:flex;align-items:flex-start;gap:12px;padding:1rem;border-radius:6px;background:#f2f7f6;border:1px solid #cfd8d0;font-size:12px}
+.proof-status-card svg{flex-shrink:0;margin-top:2px}
+.proof-status-card>div{display:flex;flex-direction:column;gap:3px;flex:1}
+.proof-status-card>div strong{font-size:13px}
+.proof-status-card>div span{font-size:12px;color:#52615a}
+.proof-status-card.verified{background:#edf8f0;border-color:#8dc4a0;color:#1d6b3a}
+.proof-status-card.verified svg{color:#1d6b3a}
+.proof-status-card.review{background:#fdf6ed;border-color:#e0b275;color:#8a5314}
+.proof-status-card.review svg{color:#c27b1e}
+.proof-status-card.failed{background:#fdf0ed;border-color:#e2988c;color:#9b2c1c}
+.proof-status-card.failed svg{color:#c93b2b}
+
+.candidate-box{margin-top:6px;padding:8px 10px;background:#fff;border:1px solid #ebd3b4;border-radius:4px;font-size:11px}
+.candidate-box ul{list-style:none;margin:4px 0 0;padding:0;display:flex;flex-direction:column;gap:2px}
+
+.proof-history{margin-top:1.25rem}
+.proof-history h3{display:flex;align-items:center;gap:6px;margin:0 0 .75rem;font-size:13px;font-weight:600;color:#1d4f49}
+.proof-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.proof-row{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#f9fafb;border:1px solid #e5eae6;border-radius:5px;font-size:12px}
+.proof-row>div:first-child{display:flex;align-items:center;gap:10px}
+.proof-row>div:first-child>div{display:flex;flex-direction:column;gap:1px}
+.proof-row strong{font-size:12px;font-weight:600}
+.proof-row span{font-size:11px;color:#71807a}
+.badge.warning{background:#fdf6ed;color:#8a5314;border:1px solid #e0b275}
+
+/* Phase J — Historical Company Workspace */
+.historical-topbar{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;margin-bottom:24px}
+.historical-search-row{display:flex;gap:12px;align-items:center;margin-bottom:20px}
+.company-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px;margin-bottom:24px}
+.company-card{background:#fff;border:1px solid #e0e5df;border-radius:8px;padding:20px;cursor:pointer;transition:all .18s ease;display:flex;flex-direction:column;gap:12px}
+.company-card:hover{border-color:#1f6051;box-shadow:0 4px 12px rgba(31,96,81,0.08);transform:translateY(-2px)}
+.company-card-header{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.company-card-title{font-size:16px;font-weight:700;color:#172022;margin:0}
+.company-card-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.company-card-metrics{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:12px;background:#f8faf9;border-radius:6px;margin-top:auto}
+.company-card-metrics div{display:flex;flex-direction:column;gap:2px}
+.company-card-metrics dt{font-size:10px;color:#71807a;font-family:'DM Mono',monospace;text-transform:uppercase}
+.company-card-metrics dd{font-size:13px;font-weight:700;color:#172022;margin:0}
+.company-card-footer{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#71807a;border-top:1px solid #edf0ec;padding-top:10px}
+
+.workspace-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.modal-overlay{position:fixed;inset:0;background:rgba(23,32,34,0.65);backdrop-filter:blur(2px);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px}
+.modal-box{background:#fff;border-radius:8px;width:min(600px,100%);max-height:90vh;overflow-y:auto;box-shadow:0 20px 40px rgba(0,0,0,0.25);border:1px solid #d9e1dc;display:flex;flex-direction:column}
+.modal-header{display:flex;justify-content:space-between;align-items:center;padding:18px 22px;border-bottom:1px solid #edf0ec}
+.modal-header h3{margin:0;font-size:16px;font-weight:700;color:#172022}
+.modal-body{padding:22px;display:flex;flex-direction:column;gap:16px}
+.modal-footer{display:flex;justify-content:flex-end;gap:10px;padding:16px 22px;border-top:1px solid #edf0ec;background:#fafbfa;border-radius:0 0 8px 8px}
+.form-field{display:flex;flex-direction:column;gap:5px}
+.form-field label{font-size:12px;font-weight:600;color:#384842}
+.form-field input,.form-field select,.form-field textarea{padding:9px 12px;border:1px solid #cfd8d0;border-radius:5px;font-size:13px;background:#fff;font-family:inherit}
+.form-field input:focus,.form-field select:focus,.form-field textarea:focus{outline:2px solid #1f6051;border-color:#1f6051}
+.form-field small{font-size:11px;color:#74827b}
+.status-pill{display:inline-flex;align-items:center;padding:3px 8px;border-radius:99px;font-size:10px;font-weight:700;letter-spacing:0.3px}
+.status-pill.paid{background:#eaf5ee;color:#1d6b3a}
+.status-pill.partial{background:#fdf6ed;color:#8a5314}
+.status-pill.open{background:#f0f3f1;color:#52615a}
