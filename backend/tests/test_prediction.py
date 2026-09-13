@@ -21,7 +21,8 @@ from backend.app.db.session import SessionLocal
 from backend.app.main import app
 from backend.app.models.business import Business
 from backend.app.models.customer import Customer
-from backend.app.models.invoice import Invoice
+from backend.app.models.invoice import Invoice, InvoiceOrigin
+from backend.app.models.invoice_document import InvoiceDocument
 from backend.app.models.payment import Payment
 from backend.app.models.prediction import PredictionResult
 from backend.app.models.task import Task
@@ -123,6 +124,7 @@ class TestPredictionIntegration(unittest.TestCase):
         payment_terms: str = "NAA8",
         currency: str = "USD",
         processing_status: str = "PROCESSED",
+        origin: InvoiceOrigin = InvoiceOrigin.CURRENT,
     ) -> Invoice:
         if invoice_number is None:
             invoice_number = f"INV-{uuid.uuid4().hex[:8].upper()}"
@@ -138,6 +140,7 @@ class TestPredictionIntegration(unittest.TestCase):
             payment_terms=payment_terms,
             payment_status="OPEN",
             processing_status=processing_status,
+            origin=origin.value,
         )
         self.db.add(inv)
         self.db.commit()
@@ -167,6 +170,7 @@ class TestPredictionIntegration(unittest.TestCase):
                 amount=1000 + index,
                 invoice_date=invoice_date,
                 due_date=due_date,
+                origin=InvoiceOrigin.HISTORICAL,
             )
             historical_invoice.payment_status = "PAID"
             payment = Payment(
@@ -268,6 +272,7 @@ class TestPredictionIntegration(unittest.TestCase):
             amount=5000.0,
             invoice_date=date(2024, 1, 1),
             due_date=date(2024, 1, 15),
+            origin=InvoiceOrigin.HISTORICAL,
         )
         pay_prior = Payment(
             id=uuid.uuid4(),
@@ -296,6 +301,7 @@ class TestPredictionIntegration(unittest.TestCase):
             amount=12000.0,
             invoice_date=date(2024, 3, 1),
             due_date=date(2024, 3, 15),
+            origin=InvoiceOrigin.HISTORICAL,
         )
         pay_future = Payment(
             id=uuid.uuid4(),
@@ -328,6 +334,7 @@ class TestPredictionIntegration(unittest.TestCase):
             amount=3000.0,
             invoice_date=date(2024, 1, 5),
             due_date=date(2024, 1, 25),
+            origin=InvoiceOrigin.HISTORICAL,
         )
         self._create_invoice(
             self.business_a_id, self.customer_a.id,
@@ -335,6 +342,7 @@ class TestPredictionIntegration(unittest.TestCase):
             amount=4000.0,
             invoice_date=date(2024, 1, 10),
             due_date=date(2024, 1, 30),
+            origin=InvoiceOrigin.HISTORICAL,
         )
         df3 = build_inference_features(self.db, inv_target)
         self.assertEqual(df3["cust_prior_invoice_count"].iloc[0], 3)
@@ -744,8 +752,8 @@ class TestPredictionIntegration(unittest.TestCase):
 
         predictor = get_predictor()
         with patch.object(predictor, "predict", wraps=predictor.predict) as actual_predict:
-            predict_for_invoice(self.db, target_a.id, self.business_a_id)
-            predict_for_invoice(self.db, target_b.id, self.business_a_id)
+            prediction_a = predict_for_invoice(self.db, target_a.id, self.business_a_id)
+            prediction_b = predict_for_invoice(self.db, target_b.id, self.business_a_id)
         self.assertEqual(actual_predict.call_count, 2)
         received_a = actual_predict.call_args_list[0].args[0]
         received_b = actual_predict.call_args_list[1].args[0]
@@ -753,6 +761,126 @@ class TestPredictionIntegration(unittest.TestCase):
             received_a["cust_avg_delay"].iloc[0],
             received_b["cust_avg_delay"].iloc[0],
         )
+        self.assertNotEqual(prediction_a.risk_score, prediction_b.risk_score)
+
+    def test_only_settled_historical_invoices_count_as_outcomes(self):
+        """CURRENT, unpaid, and partial records cannot inflate the V1 gate."""
+        historical = self._create_invoice(
+            self.business_a_id,
+            self.customer_a.id,
+            amount=1000,
+            invoice_date=date(2024, 1, 1),
+            due_date=date(2024, 1, 15),
+            origin=InvoiceOrigin.HISTORICAL,
+        )
+        self.db.add_all([
+            Payment(
+                business_id=self.business_a_id,
+                invoice_id=historical.id,
+                payment_date=datetime(2024, 1, 16, tzinfo=timezone.utc),
+                amount=400,
+                provenance="manual",
+            ),
+            Payment(
+                business_id=self.business_a_id,
+                invoice_id=historical.id,
+                payment_date=datetime(2024, 1, 17, tzinfo=timezone.utc),
+                amount=600,
+                provenance="manual",
+            ),
+        ])
+        current_history_candidate = self._create_invoice(
+            self.business_a_id,
+            self.customer_a.id,
+            amount=500,
+            invoice_date=date(2024, 1, 2),
+            due_date=date(2024, 1, 18),
+            origin=InvoiceOrigin.CURRENT,
+        )
+        self.db.add(Payment(
+            business_id=self.business_a_id,
+            invoice_id=current_history_candidate.id,
+            payment_date=datetime(2024, 1, 19, tzinfo=timezone.utc),
+            amount=500,
+            provenance="manual",
+        ))
+        self._create_invoice(
+            self.business_a_id,
+            self.customer_a.id,
+            amount=800,
+            invoice_date=date(2024, 1, 3),
+            due_date=date(2024, 1, 20),
+            origin=InvoiceOrigin.HISTORICAL,
+        )
+        target = self._create_invoice(
+            self.business_a_id,
+            self.customer_a.id,
+            invoice_date=date(2024, 4, 1),
+            due_date=date(2024, 4, 30),
+        )
+        self.db.commit()
+
+        eligibility = evaluate_prediction_eligibility(self.db, target)
+        features = build_inference_features(self.db, target)
+        self.assertEqual(eligibility.eligible_history_count, 1)
+        self.assertEqual(features["cust_prior_payment_count"].iloc[0], 1)
+
+    def test_manual_parsed_and_imported_history_feed_one_real_prediction(self):
+        """All workspace ingestion paths converge on canonical Invoice/Payment facts."""
+        provenances = ["manual", "manual", "import"]
+        histories = []
+        for index, provenance in enumerate(provenances):
+            inv_date = date(2024, 1, 1) + timedelta(days=index * 20)
+            due_date = inv_date + timedelta(days=10)
+            history = self._create_invoice(
+                self.business_a_id,
+                self.customer_a.id,
+                amount=1000 + index,
+                invoice_date=inv_date,
+                due_date=due_date,
+                origin=InvoiceOrigin.HISTORICAL,
+            )
+            histories.append(history)
+            self.db.add(Payment(
+                business_id=self.business_a_id,
+                invoice_id=history.id,
+                payment_date=datetime.combine(
+                    due_date + timedelta(days=index),
+                    datetime.min.time(),
+                    tzinfo=timezone.utc,
+                ),
+                amount=history.amount,
+                provenance=provenance,
+            ))
+
+        parsed_document = InvoiceDocument(
+            business_id=self.business_a_id,
+            invoice_id=histories[1].id,
+            storage_key=f"historical/{uuid.uuid4()}.pdf",
+            original_filename="uploaded-history.pdf",
+            content_type="application/pdf",
+            file_size=100,
+            processing_status="PROCESSED",
+            origin=InvoiceOrigin.HISTORICAL.value,
+        )
+        self.db.add(parsed_document)
+        self.db.flush()
+        histories[1].document_id = parsed_document.id
+        target = self._create_invoice(
+            self.business_a_id,
+            self.customer_a.id,
+            invoice_date=date(2024, 4, 1),
+            due_date=date(2024, 4, 30),
+        )
+        self.db.commit()
+
+        predictor = get_predictor()
+        with patch.object(predictor, "predict", wraps=predictor.predict) as actual_predict:
+            prediction = predict_for_invoice(self.db, target.id, self.business_a_id)
+        self.assertEqual(evaluate_prediction_eligibility(self.db, target).eligible_history_count, 3)
+        self.assertTrue(actual_predict.called)
+        self.assertEqual(prediction.classifier_model_version, "payment_classifier_v1")
+        self.assertEqual(prediction.timing_model_version, "payment_timing_v1")
 
     def test_actual_classifier_and_timing_artifacts_are_invoked(self):
         self._add_completed_history(self.customer_a.id, delays=[-2, 1, 4])

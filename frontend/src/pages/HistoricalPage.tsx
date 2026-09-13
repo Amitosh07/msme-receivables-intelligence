@@ -39,6 +39,7 @@ export function HistoricalPage() {
 // ----------------------------------------------------------------------
 function HistoricalCompanyListView() {
   const [companies, setCompanies] = useState<HistoricalCompanySummary[]>([]);
+  const [allCompanies, setAllCompanies] = useState<HistoricalCompanySummary[]>([]);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -61,11 +62,13 @@ function HistoricalCompanyListView() {
     setLoading(true);
     setError(null);
     try {
-      const [data, reviewData] = await Promise.all([
+      const [data, totalsData, reviewData] = await Promise.all([
         historicalApi.listCompanies(query || undefined),
+        historicalApi.listCompanies(),
         historicalApi.listReviews(),
       ]);
       setCompanies(data);
+      setAllCompanies(totalsData);
       setReviews(reviewData);
     } catch (err) {
       setError(normaliseError(err).message);
@@ -80,12 +83,12 @@ function HistoricalCompanyListView() {
 
   // Aggregate metrics
   const stats = useMemo(() => {
-    const totalCompanies = companies.length;
-    const totalInvoices = companies.reduce((sum, c) => sum + c.historical_invoice_count, 0);
-    const totalReceivables = companies.reduce((sum, c) => sum + c.total_amount, 0);
-    const totalSettled = companies.reduce((sum, c) => sum + c.total_paid, 0);
+    const totalCompanies = allCompanies.length;
+    const totalInvoices = allCompanies.reduce((sum, c) => sum + c.historical_invoice_count, 0);
+    const totalReceivables = allCompanies.reduce((sum, c) => sum + c.total_amount, 0);
+    const totalSettled = allCompanies.reduce((sum, c) => sum + c.total_paid, 0);
     return { totalCompanies, totalInvoices, totalReceivables, totalSettled };
-  }, [companies]);
+  }, [allCompanies]);
 
   return (
     <>
@@ -93,10 +96,6 @@ function HistoricalCompanyListView() {
         <div>
           <p className="eyebrow">HISTORICAL DATA</p>
           <h2>Historical company workspace</h2>
-          <p>
-            Historical records establish baseline payment behavior, customer payment timeliness patterns,
-            and machine learning training context without affecting current receivables aging.
-          </p>
         </div>
         <div className="workspace-actions">
           <button className="button" onClick={() => setShowUploadInvoiceModal(true)}>
@@ -295,7 +294,7 @@ function HistoricalCompanyListView() {
       {selectedReview && (
         <HistoricalCompanyReviewModal
           invoice={selectedReview}
-          companies={companies}
+          companies={allCompanies}
           onClose={() => setSelectedReview(null)}
           onSuccess={() => {
             setSelectedReview(null);
@@ -444,10 +443,12 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
 
   // Modal states
   const [showUploadInvoiceModal, setShowUploadInvoiceModal] = useState(false);
+  const [showManualInvoiceModal, setShowManualInvoiceModal] = useState(false);
   const [showManualPaymentModal, setShowManualPaymentModal] = useState(false);
   const [showImportPaymentModal, setShowImportPaymentModal] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState<HistoricalInvoiceItem | null>(null);
   const [dueDateInvoice, setDueDateInvoice] = useState<HistoricalInvoiceItem | null>(null);
+  const [showGstinModal, setShowGstinModal] = useState(false);
 
   const loadDetail = useCallback(async () => {
     setLoading(true);
@@ -513,16 +514,22 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
           <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
             <span className="badge">Normalized: {detail.normalized_name}</span>
             {detail.gstin && <span className="badge">GSTIN: {detail.gstin}</span>}
+            <button className="text-button" onClick={() => setShowGstinModal(true)}>
+              {detail.gstin ? "Edit GSTIN" : "Add GSTIN"}
+            </button>
             {detail.customer_ref && <span className="badge">Ref: {detail.customer_ref}</span>}
           </div>
         </div>
 
         <div className="workspace-actions">
+          <button className="button" onClick={() => setShowManualInvoiceModal(true)}>
+            <Plus size={16} /> Add historical invoice manually
+          </button>
           <button
             className="button"
             onClick={() => setShowUploadInvoiceModal(true)}
           >
-            <Plus size={16} /> Add historical invoice
+            <UploadCloud size={16} /> Upload historical invoice
           </button>
           <button
             className="button"
@@ -533,7 +540,7 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
             disabled={detail.invoices.length === 0}
             title={detail.invoices.length === 0 ? "Add an invoice first" : undefined}
           >
-            <CalendarClock size={16} /> Add payment date manually
+            <CalendarClock size={16} /> Add payment manually
           </button>
           <button
             className="button primary"
@@ -631,18 +638,18 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
                         </button>
                       )}
                     </td>
-                    <td className="numeric">{money(inv.amount, inv.currency || "INR")}</td>
+                    <td className="numeric">{inv.currency ? money(inv.amount, inv.currency) : inv.amount.toLocaleString()}</td>
                     <td>
                       {inv.payment_date ? (
                         <span style={{ color: "#1d6b3a", fontWeight: 600 }}>
                           {date(inv.payment_date)}
                         </span>
                       ) : (
-                        <span className="muted">—</span>
+                        <button className="text-button" onClick={() => openPaymentModalFor(inv)}>Pending · add payment</button>
                       )}
                     </td>
-                    <td className="numeric">{money(inv.total_paid, inv.currency || "INR")}</td>
-                    <td className="numeric">{money(inv.outstanding_balance, inv.currency || "INR")}</td>
+                    <td className="numeric">{inv.currency ? money(inv.total_paid, inv.currency) : inv.total_paid.toLocaleString()}</td>
+                    <td className="numeric">{inv.currency ? money(inv.outstanding_balance, inv.currency) : inv.outstanding_balance.toLocaleString()}</td>
                     <td>
                       <StatusBadge value={inv.payment_status} />
                     </td>
@@ -671,6 +678,16 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
           onClose={() => setShowUploadInvoiceModal(false)}
           onSuccess={() => {
             setShowUploadInvoiceModal(false);
+            void loadDetail();
+          }}
+        />
+      )}
+      {showManualInvoiceModal && (
+        <ManualHistoricalInvoiceModal
+          companyId={companyId}
+          onClose={() => setShowManualInvoiceModal(false)}
+          onSuccess={() => {
+            setShowManualInvoiceModal(false);
             void loadDetail();
           }}
         />
@@ -714,6 +731,17 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
           }}
         />
       )}
+      {showGstinModal && (
+        <CompanyGstinModal
+          companyId={companyId}
+          currentGstin={detail.gstin || ""}
+          onClose={() => setShowGstinModal(false)}
+          onSuccess={() => {
+            setShowGstinModal(false);
+            void loadDetail();
+          }}
+        />
+      )}
     </>
   );
 }
@@ -721,6 +749,58 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
 // ----------------------------------------------------------------------
 // 3. Modal: Add Historical Invoice (PDF)
 // ----------------------------------------------------------------------
+function CompanyGstinModal({
+  companyId,
+  currentGstin,
+  onClose,
+  onSuccess,
+}: {
+  companyId: string;
+  currentGstin: string;
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const [gstin, setGstin] = useState(currentGstin);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      await historicalApi.updateCompanyGstin(companyId, gstin.trim() || null);
+      onSuccess();
+    } catch (err) {
+      setError(normaliseError(err).message);
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true">
+      <div className="modal-box" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <h3>{currentGstin ? "Edit GSTIN" : "Add GSTIN"}</h3>
+          <button className="icon-button" onClick={onClose} aria-label="Close modal"><X size={18} /></button>
+        </div>
+        <form onSubmit={submit}>
+          <div className="modal-body">
+            <div className="form-field">
+              <label htmlFor="company-gstin">GSTIN (optional)</label>
+              <input id="company-gstin" value={gstin} onChange={(event) => setGstin(event.target.value)} maxLength={32} />
+            </div>
+            <small>Leave this empty to remove the stored GSTIN.</small>
+            {error && <p className="error-text" role="alert">{error}</p>}
+          </div>
+          <div className="modal-footer">
+            <button type="button" className="button" onClick={onClose}>Cancel</button>
+            <button type="submit" className="button primary" disabled={saving}>{saving && <LoaderCircle size={16} className="spin" />} Save GSTIN</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function UploadHistoricalInvoiceModal({
   companyId,
   companyName,
@@ -883,6 +963,62 @@ function HistoricalDueDateModal({
 // ----------------------------------------------------------------------
 // 4. Modal: Add Payment Date Manually
 // ----------------------------------------------------------------------
+function ManualHistoricalInvoiceModal({
+  companyId,
+  onClose,
+  onSuccess,
+}: {
+  companyId: string;
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const [amount, setAmount] = useState("");
+  const [dueDate, setDueDate] = useState("");
+  const [paymentDate, setPaymentDate] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      await historicalApi.createManualInvoice(companyId, {
+        amount: Number(amount),
+        due_date: dueDate,
+        payment_date: paymentDate || undefined,
+      });
+      onSuccess();
+    } catch (err) {
+      setError(normaliseError(err).message);
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true">
+      <div className="modal-box" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Add Historical Invoice Manually</h3>
+          <button className="icon-button" onClick={onClose} aria-label="Close modal"><X size={18} /></button>
+        </div>
+        <form onSubmit={submit}>
+          <div className="modal-body">
+            <p>The selected company is used automatically. An invoice reference will be generated by the system.</p>
+            <div className="form-field"><label htmlFor="manual-history-amount">Amount</label><input id="manual-history-amount" type="number" min="0.01" step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} required /></div>
+            <div className="form-field"><label htmlFor="manual-history-due">Due Date</label><input id="manual-history-due" type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} required /></div>
+            <div className="form-field"><label htmlFor="manual-history-payment">Payment Date (optional)</label><input id="manual-history-payment" type="date" value={paymentDate} onChange={(event) => setPaymentDate(event.target.value)} /></div>
+            <small>Leave payment date empty to create an OPEN invoice. Payments can be added later.</small>
+            {error && <p className="error-text" role="alert">{error}</p>}
+          </div>
+          <div className="modal-footer">
+            <button type="button" className="button" onClick={onClose}>Cancel</button>
+            <button type="submit" className="button primary" disabled={saving || !amount || !dueDate}>{saving && <LoaderCircle size={16} className="spin" />} Create invoice</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function ManualPaymentModal({
   companyId,
   invoices,

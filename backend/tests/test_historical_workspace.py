@@ -152,6 +152,43 @@ class TestHistoricalWorkspace(unittest.TestCase):
         self.assertEqual(other_tenant.status_code, 200)
         self.assertEqual(other_tenant.json(), [])
 
+    def test_historical_company_gstin_can_be_added_edited_and_cleared(self):
+        headers = {"Authorization": f"Bearer {self.token_a}"}
+        created = self.client.post(
+            "/historical/companies",
+            json={"display_name": "GSTIN Editable Company"},
+            headers=headers,
+        )
+        self.assertEqual(created.status_code, 201)
+        company_id = created.json()["id"]
+        valid_gstin = "27AAPFU0939F1ZV"
+        added = self.client.patch(
+            f"/historical/companies/{company_id}",
+            json={"gstin": valid_gstin.lower()},
+            headers=headers,
+        )
+        self.assertEqual(added.status_code, 200)
+        self.assertEqual(added.json()["gstin"], valid_gstin.lower())
+        invalid = self.client.patch(
+            f"/historical/companies/{company_id}",
+            json={"gstin": "INVALID"},
+            headers=headers,
+        )
+        self.assertEqual(invalid.status_code, 422)
+        cleared = self.client.patch(
+            f"/historical/companies/{company_id}",
+            json={"gstin": None},
+            headers=headers,
+        )
+        self.assertEqual(cleared.status_code, 200)
+        self.assertIsNone(cleared.json()["gstin"])
+        isolated = self.client.patch(
+            f"/historical/companies/{company_id}",
+            json={"gstin": valid_gstin},
+            headers={"Authorization": f"Bearer {self.token_b}"},
+        )
+        self.assertEqual(isolated.status_code, 404)
+
     def test_historical_payment_endpoint_rejects_current_invoice(self):
         customer = create_customer(
             self.db,
@@ -176,6 +213,114 @@ class TestHistoricalWorkspace(unittest.TestCase):
             headers={"Authorization": f"Bearer {self.token_a}"},
         )
         self.assertEqual(response.status_code, 404)
+
+    def test_manual_historical_invoice_creation_and_validation(self):
+        customer = create_customer(
+            self.db, business_id=self.business_a_id, display_name="Manual History Workspace"
+        )
+        self.db.commit()
+        headers = {"Authorization": f"Bearer {self.token_a}"}
+        path = f"/historical/companies/{customer.id}/invoices/manual"
+
+        open_response = self.client.post(
+            path, json={"amount": 6000, "due_date": "2026-01-31"}, headers=headers
+        )
+        self.assertEqual(open_response.status_code, 201)
+        opened = open_response.json()
+        self.assertTrue(opened["invoice_number"])
+        self.assertEqual(opened["origin"], "HISTORICAL")
+        self.assertEqual(opened["payment_status"], "OPEN")
+        self.assertIsNone(opened["payment_date"])
+
+        paid_response = self.client.post(
+            path,
+            json={
+                "amount": 7250.50,
+                "due_date": "2026-02-28",
+                "payment_date": "2026-02-20",
+            },
+            headers=headers,
+        )
+        self.assertEqual(paid_response.status_code, 201)
+        paid = paid_response.json()
+        self.assertNotEqual(opened["invoice_number"], paid["invoice_number"])
+        self.assertEqual(paid["payment_status"], "PAID")
+        self.assertEqual(paid["payment_date"], "2026-02-20")
+        payment = self.db.scalar(select(Payment).where(Payment.invoice_id == uuid.UUID(paid["id"])))
+        self.assertIsNotNone(payment)
+        self.assertEqual(payment.provenance, "manual")
+
+        partial = self.client.post(
+            f"/historical/invoices/{opened['id']}/payments",
+            json={"amount": 1000, "payment_date": "2026-01-20"},
+            headers=headers,
+        )
+        self.assertEqual(partial.status_code, 201)
+        self.assertEqual(partial.json()["payment_status"], "PARTIAL")
+
+        for payload in (
+            {"amount": 0, "due_date": "2026-01-31"},
+            {"amount": -1, "due_date": "2026-01-31"},
+            {"amount": 100, "due_date": "1800-01-01"},
+            {"amount": 100, "due_date": "2026-01-31", "payment_date": "2100-01-01"},
+        ):
+            with self.subTest(payload=payload):
+                self.assertEqual(self.client.post(path, json=payload, headers=headers).status_code, 422)
+
+        cross_tenant = self.client.post(
+            path,
+            json={"amount": 100, "due_date": "2026-01-31"},
+            headers={"Authorization": f"Bearer {self.token_b}"},
+        )
+        self.assertEqual(cross_tenant.status_code, 404)
+
+    def test_manual_historical_invoice_duplicate_protection_and_eligibility(self):
+        from backend.app.services.prediction_service import evaluate_prediction_eligibility
+
+        customer = create_customer(
+            self.db, business_id=self.business_a_id, display_name="Eligibility History Workspace"
+        )
+        duplicate_reference = str(uuid.uuid4())
+        self.db.add(Invoice(
+            business_id=self.business_a_id, customer_id=customer.id,
+            invoice_number=duplicate_reference, invoice_date=None,
+            due_date=date(2026, 1, 1), amount=100, currency=None,
+            origin=InvoiceOrigin.HISTORICAL.value,
+        ))
+        self.db.commit()
+        headers = {"Authorization": f"Bearer {self.token_a}"}
+        path = f"/historical/companies/{customer.id}/invoices/manual"
+        with patch(
+            "backend.app.services.historical_service.generate_manual_invoice_reference",
+            return_value=duplicate_reference,
+        ):
+            duplicate = self.client.post(
+                path, json={"amount": 100, "due_date": "2026-01-01"}, headers=headers
+            )
+        self.assertEqual(duplicate.status_code, 422)
+
+        for month in (1, 2, 3):
+            response = self.client.post(
+                path,
+                json={
+                    "amount": 1000 * month,
+                    "due_date": f"2026-0{month}-15",
+                    "payment_date": f"2026-0{month}-10",
+                },
+                headers=headers,
+            )
+            self.assertEqual(response.status_code, 201)
+        current = Invoice(
+            business_id=self.business_a_id, customer_id=customer.id,
+            invoice_number=str(uuid.uuid4()), invoice_date=date(2026, 6, 1),
+            due_date=date(2026, 6, 30), amount=5000, currency="INR",
+            origin=InvoiceOrigin.CURRENT.value, processing_status="PROCESSED",
+        )
+        self.db.add(current)
+        self.db.commit()
+        eligibility = evaluate_prediction_eligibility(self.db, current)
+        self.assertTrue(eligibility.prediction_available)
+        self.assertEqual(eligibility.eligible_history_count, 3)
 
     def test_historical_worker_auto_discovers_company_case_insensitively(self):
         existing = create_customer(

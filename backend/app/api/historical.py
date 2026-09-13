@@ -21,8 +21,10 @@ from backend.app.schemas.historical import (
     HistoricalCompanyCreate,
     HistoricalCompanyDetail,
     HistoricalCompanySummary,
+    HistoricalCompanyUpdate,
     HistoricalInvoiceReview,
     HistoricalInvoiceItem,
+    ManualHistoricalInvoiceCreate,
 )
 from backend.app.schemas.invoice import InvoiceResponse, InvoiceUploadResponse
 from backend.app.schemas.payment import (
@@ -38,6 +40,8 @@ from backend.app.services.historical_service import (
     upload_historical_company_invoice,
     upload_unassigned_historical_invoice,
     complete_historical_invoice_review,
+    create_manual_historical_invoice,
+    update_historical_company_gstin,
 )
 from backend.app.services.manual_payment_service import (
     derive_invoice_payment_status,
@@ -198,6 +202,66 @@ def get_company_historical_detail(
             detail="Company not found.",
         )
     return detail
+
+
+@router.patch(
+    "/companies/{customer_id}",
+    response_model=HistoricalCompanyDetail,
+    summary="Add, edit, or clear an optional historical company GSTIN",
+)
+def patch_historical_company(
+    customer_id: uuid.UUID,
+    payload: HistoricalCompanyUpdate,
+    tenant_ctx: TenantContext = Depends(get_tenant_context),
+    db: Session = Depends(get_db),
+) -> HistoricalCompanyDetail:
+    try:
+        update_historical_company_gstin(
+            db, tenant_ctx.business_id, customer_id, payload.gstin
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    detail = get_historical_company_detail(db, tenant_ctx.business_id, customer_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Historical company not found.")
+    return detail
+
+
+@router.post(
+    "/companies/{customer_id}/invoices/manual",
+    response_model=HistoricalInvoiceItem,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a manual historical invoice in a selected company workspace",
+)
+def post_manual_historical_invoice(
+    customer_id: uuid.UUID,
+    payload: ManualHistoricalInvoiceCreate,
+    tenant_ctx: TenantContext = Depends(get_tenant_context),
+    db: Session = Depends(get_db),
+) -> HistoricalInvoiceItem:
+    try:
+        invoice, payment = create_manual_historical_invoice(
+            db, tenant_ctx.business_id, customer_id,
+            amount=payload.amount, due_date=payload.due_date,
+            payment_date=payload.payment_date,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    total_paid, outstanding = get_invoice_payment_summary(db, invoice)
+    return HistoricalInvoiceItem(
+        id=invoice.id, invoice_number=invoice.invoice_number,
+        invoice_date=invoice.invoice_date, due_date=invoice.due_date,
+        amount=float(invoice.amount), currency=invoice.currency,
+        origin=invoice.origin, payment_status=derive_invoice_payment_status(db, invoice),
+        processing_status=invoice.processing_status, total_paid=float(total_paid),
+        outstanding_balance=float(outstanding),
+        payment_date=payment.payment_date.date() if payment else None,
+        payment_count=1 if payment else 0,
+    )
 
 
 @router.post(

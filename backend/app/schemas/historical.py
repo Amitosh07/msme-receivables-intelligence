@@ -9,11 +9,16 @@ from typing import List, Optional
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
+from decimal import Decimal
 
 
 class HistoricalCompanyCreate(BaseModel):
     """Explicit creation request for a tenant-owned historical company."""
     display_name: str = Field(min_length=1, max_length=255)
+    gstin: Optional[str] = Field(default=None, max_length=32)
+
+
+class HistoricalCompanyUpdate(BaseModel):
     gstin: Optional[str] = Field(default=None, max_length=32)
 
 
@@ -23,6 +28,12 @@ class HistoricalInvoiceReview(BaseModel):
     company_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     gstin: Optional[str] = Field(default=None, max_length=32)
     due_date: Optional[date] = None
+
+
+class ManualHistoricalInvoiceCreate(BaseModel):
+    amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    due_date: date
+    payment_date: Optional[date] = None
 
 
 class HistoricalCompanySummary(BaseModel):

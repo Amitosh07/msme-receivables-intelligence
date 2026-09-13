@@ -12,7 +12,7 @@ from typing import List, Optional
 import uuid
 
 from fastapi import HTTPException, status
-from sqlalchemy import String, func, select
+from sqlalchemy import String, func, null, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -26,7 +26,11 @@ from backend.app.schemas.historical import (
     HistoricalCompanySummary,
     HistoricalInvoiceItem,
 )
-from backend.app.services.customer_identity import create_customer, normalize_customer_name
+from backend.app.services.customer_identity import (
+    create_customer,
+    normalize_customer_name,
+    normalize_gstin,
+)
 
 
 def create_historical_company(
@@ -68,15 +72,103 @@ def create_historical_company(
         gstin=customer.gstin,
         customer_ref=customer.customer_ref,
     )
+
+
+def update_historical_company_gstin(
+    db: Session,
+    business_id: uuid.UUID,
+    customer_id: uuid.UUID,
+    gstin: Optional[str],
+) -> Customer:
+    customer = db.scalar(select(Customer).where(
+        Customer.id == customer_id,
+        Customer.business_id == business_id,
+        Customer.has_historical_context.is_(True),
+    ))
+    if customer is None:
+        raise LookupError("Historical company not found.")
+    clean_gstin = gstin.strip() if gstin else None
+    if clean_gstin and normalize_gstin(clean_gstin) is None:
+        raise ValueError("GSTIN structure or checksum is invalid.")
+    customer.gstin = clean_gstin
+    try:
+        db.commit()
+        db.refresh(customer)
+    except IntegrityError as exc:
+        db.rollback()
+        raise ValueError("GSTIN is already associated with another company.") from exc
+    return customer
 from backend.app.services.invoice_service import upload_invoice_document
 from backend.app.services.manual_payment_service import (
     derive_invoice_payment_status,
     get_invoice_payment_summary,
+    record_manual_payment,
 )
 from backend.app.services.task_service import create_task
 from backend.app.workers.queue import get_task_queue
 
 logger = logging.getLogger(__name__)
+
+
+def generate_manual_invoice_reference() -> str:
+    """Generate an opaque invoice reference; database uniqueness is authoritative."""
+    return str(uuid.uuid4())
+
+
+def create_manual_historical_invoice(
+    db: Session,
+    business_id: uuid.UUID,
+    customer_id: uuid.UUID,
+    *,
+    amount: Decimal,
+    due_date: date,
+    payment_date: Optional[date] = None,
+) -> tuple[Invoice, Optional[Payment]]:
+    """Create a historical invoice with a generated DB-unique reference."""
+    customer = db.scalar(select(Customer).where(
+        Customer.id == customer_id, Customer.business_id == business_id
+    ))
+    if customer is None:
+        raise LookupError("Company not found.")
+    if due_date.year < 1990 or due_date.year > 2100:
+        raise ValueError("Due date must be between 1990 and 2100.")
+    reference = generate_manual_invoice_reference()
+    invoice = Invoice(
+        business_id=business_id,
+        customer_id=customer.id,
+        invoice_number=reference,
+        invoice_date=None,
+        due_date=due_date,
+        amount=amount,
+        currency=null(),
+        payment_status="OPEN",
+        processing_status="PROCESSED",
+        origin=InvoiceOrigin.HISTORICAL.value,
+    )
+    customer.has_historical_context = True
+    try:
+        db.add(invoice)
+        db.flush()
+        payment = None
+        if payment_date is not None:
+            payment = record_manual_payment(
+                db,
+                business_id=business_id,
+                invoice_id=invoice.id,
+                payment_date=payment_date,
+                amount=amount,
+                note="Manual historical invoice settlement",
+            ).payment
+        else:
+            db.commit()
+            db.refresh(invoice)
+        return invoice, payment
+    except IntegrityError as exc:
+        db.rollback()
+        raise ValueError("Generated invoice identifier already exists; please retry.") from exc
+    except Exception:
+        db.rollback()
+        raise
 
 
 def list_historical_companies(

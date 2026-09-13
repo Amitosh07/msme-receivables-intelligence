@@ -83,11 +83,10 @@ export function UploadPage() {
       <div>
         <p className="eyebrow">Data intake</p>
         <h2>Import invoices</h2>
-        <p>Invoice documents process asynchronously. Historical company records and payments are managed in the Historical Data workspace.</p>
       </div>
     </section>
     <div className="upload-grid" style={{ gridTemplateColumns: "1fr" }}>
-      <UploadCard icon={FileText} title="Invoice PDF" note="PDF only. Status changes from Pending to Processing, then Ready or Failed.">
+      <UploadCard icon={FileText} title="Invoice PDF" note="Upload a PDF file.">
         <input id="invoice-file" className="file-input" type="file" accept="application/pdf,.pdf" onChange={pickInvoice} />
         <label htmlFor="invoice-file" className="dropzone">
           <UploadCloud size={25} />
@@ -104,7 +103,6 @@ export function UploadPage() {
       <div className="panel-heading">
         <div>
           <h2>Recent document processing</h2>
-          <p>Updates automatically while work is active, for up to two minutes.</p>
         </div>
         <button className="text-button" onClick={() => { void loadDocs(); setPollGeneration((value) => value + 1); }}>Refresh</button>
       </div>

@@ -15,12 +15,12 @@ import uuid
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import Date, func, select
+from sqlalchemy import Date, and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from backend.app.models.business import Business
 from backend.app.models.customer import Customer
-from backend.app.models.invoice import Invoice
+from backend.app.models.invoice import Invoice, InvoiceOrigin
 from backend.app.models.payment import Payment
 from backend.app.models.prediction import PredictionResult
 from backend.ml.inference.predict import InferenceError, V1Predictor
@@ -142,10 +142,10 @@ class PredictionEligibility:
 
 
 def get_eligible_prior_payments(db: Session, invoice: Invoice) -> list[Payment]:
-    """Return completed, delay-computable outcomes known strictly before T."""
-    if invoice.customer_id is None:
+    """Return one factual completion outcome per historical invoice, as known at T."""
+    if invoice.customer_id is None or invoice.invoice_date is None:
         return []
-    return list(
+    candidates = list(
         db.scalars(
             select(Payment)
             .join(Invoice, Payment.invoice_id == Invoice.id)
@@ -155,13 +155,40 @@ def get_eligible_prior_payments(db: Session, invoice: Invoice) -> list[Payment]:
                 Payment.amount > 0,
                 Invoice.business_id == invoice.business_id,
                 Invoice.customer_id == invoice.customer_id,
-                Invoice.invoice_date < invoice.invoice_date,
+                Invoice.origin == InvoiceOrigin.HISTORICAL.value,
+                Invoice.due_date.is_not(None),
+                or_(
+                    Invoice.invoice_date < invoice.invoice_date,
+                    and_(
+                        Invoice.invoice_date.is_(None),
+                        Invoice.due_date < invoice.invoice_date,
+                    ),
+                ),
                 Invoice.id != invoice.id,
                 func.cast(Payment.payment_date, Date) < invoice.invoice_date,
             )
             .order_by(Payment.payment_date.asc(), Payment.id.asc())
         ).all()
     )
+
+    # Payment rows are factual events, but the V1 threshold is expressed in
+    # completed invoice outcomes. Accumulate eligible linked payments and emit
+    # only the payment that first settles each invoice. This prevents an unpaid
+    # shell or several partial payments on one invoice from inflating history.
+    paid_by_invoice: dict[uuid.UUID, float] = {}
+    completed_invoice_ids: set[uuid.UUID] = set()
+    completed_outcomes: list[Payment] = []
+    for payment in candidates:
+        invoice_id = payment.invoice_id
+        if invoice_id is None or invoice_id in completed_invoice_ids:
+            continue
+        paid_by_invoice[invoice_id] = (
+            paid_by_invoice.get(invoice_id, 0.0) + float(payment.amount)
+        )
+        if paid_by_invoice[invoice_id] >= float(payment.invoice.amount):
+            completed_invoice_ids.add(invoice_id)
+            completed_outcomes.append(payment)
+    return completed_outcomes
 
 
 def evaluate_prediction_eligibility(
@@ -233,6 +260,7 @@ def build_inference_features(db: Session, invoice: Invoice) -> pd.DataFrame:
             .where(
                 Invoice.business_id == invoice.business_id,
                 Invoice.customer_id == invoice.customer_id,
+                Invoice.origin == InvoiceOrigin.HISTORICAL.value,
                 Invoice.invoice_date < ref_date,
                 Invoice.id != invoice.id,
             )
