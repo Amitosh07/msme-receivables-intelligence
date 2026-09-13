@@ -22,6 +22,7 @@ from backend.app.schemas.historical import (
     HistoricalCompanyDetail,
     HistoricalCompanySummary,
     HistoricalCompanyUpdate,
+    HistoricalInvoiceCompanyCorrection,
     HistoricalInvoiceReview,
     HistoricalInvoiceItem,
     ManualHistoricalInvoiceCreate,
@@ -34,7 +35,9 @@ from backend.app.schemas.payment import (
     PaymentResponse,
 )
 from backend.app.services.historical_service import (
+    correct_historical_invoice_company,
     create_historical_company,
+    delete_historical_company,
     get_historical_company_detail,
     list_historical_companies,
     upload_historical_company_invoice,
@@ -103,6 +106,7 @@ def review_historical_invoice(
         db.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     total_paid, outstanding = get_invoice_payment_summary(db, invoice)
+    customer = invoice.customer if invoice.customer_id else None
     return HistoricalInvoiceItem(
         id=invoice.id, invoice_number=invoice.invoice_number,
         invoice_date=invoice.invoice_date, due_date=invoice.due_date,
@@ -111,6 +115,56 @@ def review_historical_invoice(
         processing_status=invoice.processing_status,
         total_paid=float(total_paid), outstanding_balance=float(outstanding),
         payment_count=len(invoice.payments), document_id=invoice.document_id,
+        customer_id=invoice.customer_id,
+        customer_name=customer.display_name if customer else None,
+    )
+
+
+@router.patch(
+    "/invoices/{invoice_id}/company",
+    response_model=HistoricalInvoiceItem,
+    summary="Correct or replace the associated company for a historical invoice",
+)
+def correct_invoice_company_endpoint(
+    invoice_id: uuid.UUID,
+    payload: HistoricalInvoiceCompanyCorrection,
+    tenant_ctx: TenantContext = Depends(get_tenant_context),
+    db: Session = Depends(get_db),
+) -> HistoricalInvoiceItem:
+    try:
+        invoice = correct_historical_invoice_company(
+            db,
+            business_id=tenant_ctx.business_id,
+            invoice_id=invoice_id,
+            replacement_customer_id=payload.replacement_customer_id,
+            replacement_company_name=payload.replacement_company_name,
+            create_if_missing=payload.create_if_missing,
+            gstin=payload.gstin,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    total_paid, outstanding = get_invoice_payment_summary(db, invoice)
+    customer = invoice.customer if invoice.customer_id else None
+    return HistoricalInvoiceItem(
+        id=invoice.id,
+        invoice_number=invoice.invoice_number,
+        invoice_date=invoice.invoice_date,
+        due_date=invoice.due_date,
+        amount=float(invoice.amount),
+        currency=invoice.currency,
+        origin=invoice.origin,
+        payment_status=derive_invoice_payment_status(db, invoice),
+        processing_status=invoice.processing_status,
+        total_paid=float(total_paid),
+        outstanding_balance=float(outstanding),
+        payment_count=len(invoice.payments),
+        document_id=invoice.document_id,
+        customer_id=invoice.customer_id,
+        customer_name=customer.display_name if customer else None,
     )
 
 
@@ -227,6 +281,33 @@ def patch_historical_company(
     if detail is None:
         raise HTTPException(status_code=404, detail="Historical company not found.")
     return detail
+
+
+@router.delete(
+    "/companies/{customer_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Delete a historical company or its historical records",
+)
+def delete_historical_company_endpoint(
+    customer_id: uuid.UUID,
+    tenant_ctx: TenantContext = Depends(get_tenant_context),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        return delete_historical_company(
+            db=db,
+            business_id=tenant_ctx.business_id,
+            customer_id=customer_id,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to delete historical company %s: %s", customer_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete historical company.",
+        ) from exc
 
 
 @router.post(

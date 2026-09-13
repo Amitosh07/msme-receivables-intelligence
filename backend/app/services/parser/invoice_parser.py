@@ -37,11 +37,30 @@ CURRENCY_CODES = {
     "EUR": ("EUR", "€"), "GBP": ("GBP", "£"), "AUD": ("A$", "AUD"),
 }
 TOTAL_LABELS = (
-    ("grand total", 1.00), ("total invoice value", 0.99), ("total amount", 0.98),
-    ("invoice total", 0.98), ("total payable", 0.98), ("net payable", 0.97),
-    ("amount due", 0.97), ("balance due", 0.96), ("total bill amount", 0.96),
-    ("total due", 0.95), ("gross total", 0.95), ("total value", 0.95),
-    ("net amount payable", 0.95), ("invoice value", 0.94), ("payment due", 0.93),
+    ("grand total", 1.00),
+    ("grand total amount", 1.00),
+    ("total invoice value", 0.99),
+    ("total amount", 0.98),
+    ("invoice total", 0.98),
+    ("total payable", 0.98),
+    ("net payable", 0.97),
+    ("amount due", 0.97),
+    ("final amount", 0.97),
+    ("balance due", 0.96),
+    ("total bill amount", 0.96),
+    ("bill amount", 0.96),
+    ("invoice amount", 0.96),
+    ("amount payable", 0.96),
+    ("total due", 0.95),
+    ("gross total", 0.95),
+    ("total value", 0.95),
+    ("net amount payable", 0.95),
+    ("net amount", 0.95),
+    ("net total", 0.95),
+    ("invoice value", 0.94),
+    ("payment due", 0.93),
+    ("balance payable", 0.93),
+    ("total charges", 0.93),
     ("total", 0.82),
 )
 
@@ -304,16 +323,29 @@ class InvoiceParser:
         amount_candidates: list[tuple[_Candidate, str]] = []
         # Prefer the unrestricted branch first; otherwise an ungrouped amount
         # such as 125000 is prematurely captured as 125.
-        number = r"(?:\(?\s*)?\d+(?:,\d{2,3})*(?:\.\d{1,2})?"
+        number = r"(?:\(?\s*)?\d+(?:,\s*\d{2,3})*(?:\.\d{1,2})?"
         marker = r"(?:₹|\$|€|£|US\$|C\$|A\$|INR|USD|CAD|EUR|GBP|AUD|Rs\.?|Indian\s+Rupees?)?"
         for label, label_score in TOTAL_LABELS:
-            pattern = rf"(?i)\b{re.escape(label)}\b\s*[:#-]?\s*({marker})[^\d]{{0,24}}({number})\s*([A-Z]{{3}}|₹|\$|€|£|Rs\.?)?"
+            pattern = rf"(?i)\b{re.escape(label)}\b\s*[:#-]?\s*({marker})[^\d]{{0,32}}({number})\s*([A-Z]{{3}}|₹|\$|€|£|Rs\.?)?"
             for match in re.finditer(pattern, text):
                 parsed = cls._parse_money(match.group(2))
                 if parsed and parsed > 0:
                     context = " ".join(part or "" for part in (match.group(1), match.group(3)))
                     score = min(1.0, label_score + min(0.03, len(str(int(parsed))) * 0.003))
                     amount_candidates.append((_Candidate(parsed, score), context))
+        if not amount_candidates:
+            # Multi-line fallback: check consecutive lines where label is on line i and amount on line i+1
+            lines = [l.strip() for l in text.splitlines() if l.strip()]
+            for i, line in enumerate(lines[:-1]):
+                for label, label_score in TOTAL_LABELS:
+                    if re.fullmatch(rf"(?i){re.escape(label)}\s*[:#-]*", line):
+                        next_line = lines[i + 1]
+                        m = re.search(rf"({marker})\s*({number})", next_line)
+                        if m:
+                            parsed = cls._parse_money(m.group(2))
+                            if parsed and parsed > 0:
+                                amount_candidates.append((_Candidate(parsed, label_score * 0.95), m.group(1) or ""))
+                        break
         if not amount_candidates:
             return None, cls._currency_from_text(text)
         amount_candidate, context = max(amount_candidates, key=lambda item: item[0].score)
@@ -356,12 +388,14 @@ class InvoiceParser:
         labels = re.compile(
             r"(?i)^(?:details\s+of\s+(?:receiver|buyer|recipient)(?:\s*[|/]\s*(?:billed\s+to|bill\s+to))?"
             r"|bill(?:ed)?\s+to(?:\s*\([^)]*\))?"
-            r"|buyer\s*\([^)]*\)(?:\s*(?:name|details))?"
-            r"|buyer(?:\s*(?:name|details))?"
-            r"|consignee\s*\((?:billed\s+to|bill\s+to)\)"
-            r"|customer(?:\s*(?:name|details))?|client(?:\s*(?:name|details))?"
-            r"|party\s+name|name\s+of\s+party"
+            r"|buyer(?:\s*(?:\([^)]*\)|details|name|info))?"
+            r"|consignee(?:\s*\((?:billed\s+to|bill\s+to)\))?"
+            r"|customer(?:\s*(?:\([^)]*\)|details|name|info|id))?"
+            r"|client(?:\s*(?:\([^)]*\)|details|name|info))?"
+            r"|party(?:\s*(?:name|details))?|name\s+of\s+party"
             r"|sold\s+to|invoice(?:d)?\s+to|recipient(?:\s*(?:name|details))?"
+            r"|receiver(?:\s*(?:name|details))?"
+            r"|purchaser(?:\s*(?:name|details))?"
             r"|m/s\.?|messrs\.?)\s*(?:\([^)]*\))?\s*[:#-]*"
         )
         structural = re.compile(
@@ -397,7 +431,8 @@ class InvoiceParser:
                     and not re.match(r"(?i)^(?:GSTIN|PAN|CIN|STATE|INV|PO|TEL|MOB|PH)[-:/]?", clean_name)
                 ):
                     name = clean_name[:255]
-                    confidence = 0.94 if candidate == inline and inline else 0.86
+                    is_legal_entity = bool(re.search(r"(?i)\b(?:pvt|ltd|limited|private|llp|inc|corp|enterprises|solutions|technologies|industries)\b", clean_name))
+                    confidence = 0.95 if (candidate == inline and inline) or is_legal_entity else 0.86
                     break
 
             if name:

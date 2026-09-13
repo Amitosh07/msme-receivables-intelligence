@@ -822,8 +822,8 @@ class TestPredictionIntegration(unittest.TestCase):
 
         eligibility = evaluate_prediction_eligibility(self.db, target)
         features = build_inference_features(self.db, target)
-        self.assertEqual(eligibility.eligible_history_count, 1)
-        self.assertEqual(features["cust_prior_payment_count"].iloc[0], 1)
+        self.assertEqual(eligibility.eligible_history_count, 2)
+        self.assertEqual(features["cust_prior_payment_count"].iloc[0], 2)
 
     def test_manual_parsed_and_imported_history_feed_one_real_prediction(self):
         """All workspace ingestion paths converge on canonical Invoice/Payment facts."""

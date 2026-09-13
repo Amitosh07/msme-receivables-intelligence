@@ -1099,6 +1099,948 @@ class TestHistoricalWorkspace(unittest.TestCase):
         self.assertEqual(fetch_data["origin"], "CURRENT")
         self.assertEqual(fetch_data["payment_status"], "OPEN")
 
+    def test_phase_r_historical_invoice_and_payment_contract_regression(self):
+        """
+        Phase R Regression Tests:
+        Verifies API contracts and schema responses for historical invoices and payments
+        under conditions observed during frontend interactions:
+        - Manual historical invoice has null currency, null invoice_date, null document_id
+        - GET /invoices returns historical invoices with null optional fields cleanly
+        - GET /historical/companies/{id} returns historical invoice items with null currency
+        - POST /historical/companies/{id}/invoices/{inv_id}/payments records payment cleanly
+        - Invoices with 0 payments, 1 payment, and multiple payments serialize accurately
+        - Both /invoices and company detail endpoints handle mixed/historical records
+        """
+        # 1. Create a historical company
+        company_res = self.client.post(
+            "/historical/companies",
+            json={"display_name": "Phase R Historical Corp", "gstin": "27AAPFU0939F1ZV"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(company_res.status_code, 201)
+        company_id = company_res.json()["id"]
+
+        # 2. Add manual historical invoice without initial payment
+        # (simulates user adding historical invoice)
+        inv_res = self.client.post(
+            f"/historical/companies/{company_id}/invoices/manual",
+            json={
+                "amount": 75000.00,
+                "due_date": "2026-02-15",
+            },
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(inv_res.status_code, 201)
+        inv_data = inv_res.json()
+        invoice_id = inv_data["id"]
+        # Explicitly verify that currency is null/None and invoice_date is null/None
+        self.assertIsNone(inv_data.get("currency"))
+        self.assertIsNone(inv_data.get("invoice_date"))
+        self.assertEqual(inv_data["origin"], "HISTORICAL")
+        self.assertEqual(inv_data["payment_status"], "OPEN")
+        self.assertEqual(inv_data["payment_count"], 0)
+        self.assertIsNone(inv_data["payment_date"])
+
+        # 3. GET /historical/companies/{company_id} - Company workspace detail
+        # Must return valid structure where invoice has currency=None, 0 payments
+        detail_res = self.client.get(
+            f"/historical/companies/{company_id}",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(detail_res.status_code, 200)
+        detail_data = detail_res.json()
+        self.assertEqual(len(detail_data["invoices"]), 1)
+        detail_inv = detail_data["invoices"][0]
+        self.assertIsNone(detail_inv["currency"])
+        self.assertIsNone(detail_inv["invoice_date"])
+        self.assertEqual(detail_inv["payment_count"], 0)
+        self.assertEqual(detail_inv["total_paid"], 0.0)
+        self.assertEqual(detail_inv["outstanding_balance"], 75000.00)
+
+        # 4. GET /invoices - Invoices register page endpoint
+        # Verifies the Invoices listing endpoint correctly serializes historical invoices
+        # with null currency, null invoice_date, null document_id
+        list_res = self.client.get(
+            "/invoices",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(list_res.status_code, 200)
+        list_items = list_res.json()["items"]
+        matched_hist = [i for i in list_items if i["id"] == invoice_id]
+        self.assertEqual(len(matched_hist), 1)
+        self.assertIsNone(matched_hist[0]["currency"])
+        self.assertIsNone(matched_hist[0]["invoice_date"])
+        self.assertEqual(matched_hist[0]["origin"], "HISTORICAL")
+
+        # 5. Record first partial payment via company-scoped payment endpoint
+        # (used by Add payment modal)
+        pay_res_1 = self.client.post(
+            f"/historical/companies/{company_id}/invoices/{invoice_id}/payments",
+            json={
+                "payment_date": "2026-02-20",
+                "amount": 25000.00,
+                "reference": "UTR-PHASE-R-01",
+                "note": "First partial historical payment",
+            },
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(pay_res_1.status_code, 201)
+        pay_data_1 = pay_res_1.json()
+        self.assertEqual(pay_data_1["payment_status"], "PARTIAL")
+        self.assertEqual(pay_data_1["total_paid"], 25000.00)
+        self.assertEqual(pay_data_1["outstanding_balance"], 50000.00)
+
+        # 6. Verify detail view after 1 payment
+        detail_res_2 = self.client.get(
+            f"/historical/companies/{company_id}",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(detail_res_2.status_code, 200)
+        inv_after_p1 = detail_res_2.json()["invoices"][0]
+        self.assertEqual(inv_after_p1["payment_count"], 1)
+        self.assertEqual(inv_after_p1["payment_date"], "2026-02-20")
+        self.assertEqual(inv_after_p1["payment_status"], "PARTIAL")
+
+        # 7. Record second settlement payment (multiple payments on 1 historical invoice)
+        pay_res_2 = self.client.post(
+            f"/historical/companies/{company_id}/invoices/{invoice_id}/payments",
+            json={
+                "payment_date": "2026-02-25",
+                "amount": 50000.00,
+                "reference": "UTR-PHASE-R-02",
+                "note": "Final settlement historical payment",
+            },
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(pay_res_2.status_code, 201)
+        pay_data_2 = pay_res_2.json()
+        self.assertEqual(pay_data_2["payment_status"], "PAID")
+        self.assertEqual(pay_data_2["total_paid"], 75000.00)
+        self.assertEqual(pay_data_2["outstanding_balance"], 0.0)
+
+        # 8. Verify detail view after multiple payments
+        detail_res_3 = self.client.get(
+            f"/historical/companies/{company_id}",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(detail_res_3.status_code, 200)
+        inv_after_p2 = detail_res_3.json()["invoices"][0]
+        self.assertEqual(inv_after_p2["payment_count"], 2)
+        self.assertEqual(inv_after_p2["payment_status"], "PAID")
+        self.assertEqual(inv_after_p2["outstanding_balance"], 0.0)
+
+    # ======================================================================
+    # PHASE S TESTS: HISTORICAL COMPANY MANAGEMENT
+    # ======================================================================
+
+    def test_phase_s_brand_new_tenant_empty_state(self):
+        """A brand-new account with no historical data shows 0 companies, 0 invoices, 0 totals."""
+        suffix = uuid.uuid4().hex[:8]
+        res = self.client.post(
+            "/auth/register",
+            json={
+                "email": f"empty_tenant_{suffix}@corp.com",
+                "password": "Password123!",
+                "full_name": "Empty User",
+                "business_name": f"Empty Corp {suffix}",
+            },
+        )
+        self.assertEqual(res.status_code, 201)
+        token = res.json()["access_token"]
+
+        # Listing must return empty list with no seed/demo companies
+        list_res = self.client.get(
+            "/historical/companies",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(list_res.status_code, 200)
+        companies = list_res.json()
+        self.assertEqual(len(companies), 0)
+
+    def test_phase_s_create_company_required_name_and_optional_gstin(self):
+        """Must allow creating company with required name; optional valid GSTIN validated."""
+        # 1. Valid creation without GSTIN
+        res_no_gst = self.client.post(
+            "/historical/companies",
+            json={"display_name": "Tata Technologies Ltd"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(res_no_gst.status_code, 201)
+        data_no_gst = res_no_gst.json()
+        self.assertEqual(data_no_gst["display_name"], "Tata Technologies Ltd")
+        self.assertIsNone(data_no_gst["gstin"])
+
+        # 2. Valid creation using company_name field alias
+        res_alias = self.client.post(
+            "/historical/companies",
+            json={"company_name": "Wipro Enterprises Pvt Ltd"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(res_alias.status_code, 201)
+        self.assertEqual(res_alias.json()["display_name"], "Wipro Enterprises Pvt Ltd")
+
+        # 3. Valid creation with valid GSTIN (Karnataka: 29AABCU9603R1ZJ)
+        res_gst = self.client.post(
+            "/historical/companies",
+            json={
+                "display_name": "Infosys BPM Ltd",
+                "gstin": "29AABCU9603R1ZJ",
+            },
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(res_gst.status_code, 201)
+        self.assertEqual(res_gst.json()["gstin"], "29AABCU9603R1ZJ")
+
+        # 4. Missing name rejected with 422
+        res_empty = self.client.post(
+            "/historical/companies",
+            json={"display_name": "   "},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(res_empty.status_code, 422)
+
+        # 5. Invalid GSTIN checksum rejected with 422
+        res_bad_gst = self.client.post(
+            "/historical/companies",
+            json={
+                "display_name": "Bad GSTIN Corp",
+                "gstin": "29AABCU9603R1Z9",  # bad check digit
+            },
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(res_bad_gst.status_code, 422)
+
+    def test_phase_s_duplicate_company_case_insensitive_and_normalized(self):
+        """Duplicate company under the same tenant is rejected via normalized name matching."""
+        # 1. Create first company
+        res1 = self.client.post(
+            "/historical/companies",
+            json={"display_name": "Apex Manufacturing Pvt Ltd"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(res1.status_code, 201)
+
+        # 2. Lowercase duplicate
+        res2 = self.client.post(
+            "/historical/companies",
+            json={"display_name": "apex manufacturing pvt ltd"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(res2.status_code, 409)
+
+        # 3. Uppercase duplicate
+        res3 = self.client.post(
+            "/historical/companies",
+            json={"display_name": "APEX MANUFACTURING PVT LTD"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(res3.status_code, 409)
+
+        # 4. Suffix canonicalized variant duplicate ('Private Limited' vs 'Pvt Ltd')
+        res4 = self.client.post(
+            "/historical/companies",
+            json={"display_name": "Apex Manufacturing Private Limited"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(res4.status_code, 409)
+
+        # 5. Spacing/punctuation variant duplicate
+        res5 = self.client.post(
+            "/historical/companies",
+            json={"display_name": "  Apex   Manufacturing, Pvt. Ltd.  "},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(res5.status_code, 409)
+
+    def test_phase_s_tenant_scoped_uniqueness(self):
+        """Tenant A and Tenant B may each have an 'Apex Manufacturing' without conflict."""
+        res_a = self.client.post(
+            "/historical/companies",
+            json={"display_name": "Apex Manufacturing"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(res_a.status_code, 201)
+
+        res_b = self.client.post(
+            "/historical/companies",
+            json={"display_name": "Apex Manufacturing"},
+            headers={"Authorization": f"Bearer {self.token_b}"},
+        )
+        self.assertEqual(res_b.status_code, 201)
+        self.assertNotEqual(res_a.json()["id"], res_b.json()["id"])
+
+    def test_phase_s_search_case_insensitive_and_normalized(self):
+        """Company search matches case-insensitively and by normalized name."""
+        self.client.post(
+            "/historical/companies",
+            json={"display_name": "Bharat Heavy Electricals Pvt Ltd"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.client.post(
+            "/historical/companies",
+            json={"display_name": "Reliance Petrochemicals Ltd"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+
+        # Case-insensitive substring search
+        res1 = self.client.get(
+            "/historical/companies?search=bharat",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(res1.status_code, 200)
+        items1 = res1.json()
+        self.assertEqual(len(items1), 1)
+        self.assertEqual(items1[0]["display_name"], "Bharat Heavy Electricals Pvt Ltd")
+
+        # Uppercase search
+        res2 = self.client.get(
+            "/historical/companies?search=BHARAT",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(res2.status_code, 200)
+        self.assertEqual(len(res2.json()), 1)
+
+        # Normalized search ('private limited' matches 'Pvt Ltd')
+        res3 = self.client.get(
+            "/historical/companies?search=bharat heavy electricals private limited",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(res3.status_code, 200)
+        self.assertEqual(len(res3.json()), 1)
+
+        # Search with no match
+        res4 = self.client.get(
+            "/historical/companies?search=NonExistentCorp",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(res4.status_code, 200)
+        self.assertEqual(len(res4.json()), 0)
+
+    def test_phase_s_delete_historical_company_exclusive(self):
+        """Deleting a historical-only company deletes customer, historical invoices, and payments."""
+        # 1. Create company
+        c_res = self.client.post(
+            "/historical/companies",
+            json={"display_name": "Delete Me Corp"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(c_res.status_code, 201)
+        cid = c_res.json()["id"]
+
+        # 2. Add historical manual invoice with payment
+        inv_res = self.client.post(
+            f"/historical/companies/{cid}/invoices/manual",
+            json={
+                "amount": 45000.00,
+                "due_date": "2026-02-15",
+                "payment_date": "2026-02-14",
+            },
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(inv_res.status_code, 201)
+        inv_id = inv_res.json()["id"]
+
+        # Verify company is listed
+        list_before = self.client.get(
+            "/historical/companies",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertTrue(any(c["id"] == cid for c in list_before.json()))
+
+        # 3. Delete historical company
+        del_res = self.client.delete(
+            f"/historical/companies/{cid}",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(del_res.status_code, 200)
+        del_data = del_res.json()
+        self.assertEqual(del_data["action"], "company_deleted")
+
+        # 4. Verify company is gone from GET /historical/companies/{cid}
+        detail_res = self.client.get(
+            f"/historical/companies/{cid}",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(detail_res.status_code, 404)
+
+        # 5. Verify company is gone from GET /historical/companies
+        list_after = self.client.get(
+            "/historical/companies",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertFalse(any(c["id"] == cid for c in list_after.json()))
+
+        # 6. Verify Customer row completely purged from DB
+        cust_row = self.db.get(Customer, uuid.UUID(cid))
+        self.assertIsNone(cust_row)
+
+        # 7. Verify Invoice row purged from DB
+        inv_row = self.db.get(Invoice, uuid.UUID(inv_id))
+        self.assertIsNone(inv_row)
+
+    def test_phase_s_delete_preserves_current_operational_data(self):
+        """Deleting historical company for a customer with CURRENT operational invoices preserves operational records."""
+        # 1. Create a customer with a CURRENT operational invoice
+        cust = create_customer(
+            self.db,
+            business_id=self.business_a_id,
+            display_name="Dual Purpose Client Pvt Ltd",
+        )
+        self.db.commit()
+        cid = cust.id
+
+        current_inv = Invoice(
+            business_id=self.business_a_id,
+            customer_id=cid,
+            invoice_number="INV-OPERATIONAL-001",
+            amount=Decimal("120000.00"),
+            due_date=date(2026, 6, 1),
+            payment_status="OPEN",
+            processing_status="PROCESSED",
+            origin=InvoiceOrigin.CURRENT.value,
+        )
+        self.db.add(current_inv)
+        self.db.commit()
+        current_inv_id = current_inv.id
+
+        # 2. Add a HISTORICAL invoice for this customer via historical manual invoice endpoint
+        # First set has_historical_context = True on the company
+        cust.has_historical_context = True
+        self.db.commit()
+
+        hist_inv_res = self.client.post(
+            f"/historical/companies/{cid}/invoices/manual",
+            json={
+                "amount": 30000.00,
+                "due_date": "2025-12-01",
+                "payment_date": "2025-11-28",
+            },
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(hist_inv_res.status_code, 201)
+        hist_inv_id = hist_inv_res.json()["id"]
+
+        # Verify company is present in historical list
+        hist_list = self.client.get(
+            "/historical/companies",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        ).json()
+        self.assertTrue(any(c["id"] == str(cid) for c in hist_list))
+
+        # 3. Delete historical company
+        del_res = self.client.delete(
+            f"/historical/companies/{cid}",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(del_res.status_code, 200)
+        self.assertEqual(del_res.json()["action"], "historical_records_removed")
+
+        # 4. Verify Customer STILL EXISTS in database
+        self.db.expire_all()
+        cust_after = self.db.get(Customer, cid)
+        self.assertIsNotNone(cust_after)
+        self.assertFalse(cust_after.has_historical_context)
+
+        # 5. Verify CURRENT operational invoice STILL EXISTS
+        current_inv_after = self.db.get(Invoice, current_inv_id)
+        self.assertIsNotNone(current_inv_after)
+        self.assertEqual(current_inv_after.origin, InvoiceOrigin.CURRENT.value)
+
+        # 6. Verify HISTORICAL invoice was DELETED
+        hist_inv_after = self.db.get(Invoice, uuid.UUID(hist_inv_id))
+        self.assertIsNone(hist_inv_after)
+
+        # 7. Verify customer is NO LONGER listed under Historical Data
+        hist_list_after = self.client.get(
+            "/historical/companies",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        ).json()
+        self.assertFalse(any(c["id"] == str(cid) for c in hist_list_after))
+
+        # 8. Verify operational invoice is still visible in /invoices register
+        op_list = self.client.get(
+            "/invoices",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        ).json()["items"]
+        self.assertTrue(any(i["id"] == str(current_inv_id) for i in op_list))
+
+    # ------------------------------------------------------------------
+    # Phase T Tests: Historical Parser Contract, Discovery & Correction
+    # ------------------------------------------------------------------
+
+    def test_phase_t_historical_upload_with_rupee_symbol_and_auto_discovered_company(self):
+        """
+        Verify historical invoice parser supports '₹' symbol, Indian number formatting,
+        extracts reliable customer name, and automatically creates the customer with
+        has_historical_context=True and attaches the invoice.
+        """
+        pdf_bytes = _create_minimal_pdf()
+        parsed_inv = ExtractedInvoice(
+            invoice_number="HIST-RUPEE-101",
+            customer_name="Phase T Bharat Dynamics Ltd",
+            customer_gstin=None,  # GSTIN is optional
+            invoice_date=date(2025, 11, 1),
+            due_date=date(2025, 12, 1),
+            amount=150000.00,
+            currency="INR",
+            payment_terms="Net 30",
+        )
+
+        with patch("backend.app.workers.handlers.InvoiceParser.parse", return_value=ExtractionResult(success=True, invoice=parsed_inv, method="text")):
+            resp = self.client.post(
+                "/historical/invoices/upload",
+                files={"file": ("invoice_rupee.pdf", pdf_bytes, "application/pdf")},
+                headers={"Authorization": f"Bearer {self.token_a}"},
+            )
+            self.assertEqual(resp.status_code, 201)
+            task_id = uuid.UUID(resp.json()["task_id"])
+            task = self.db.get(Task, task_id)
+            handle_parse_invoice(self.db, task, task.payload)
+
+        # Confirm customer was auto-created and has_historical_context = True
+        self.db.expire_all()
+        cust = self.db.scalar(
+            select(Customer).where(
+                Customer.business_id == self.business_a_id,
+                Customer.display_name == "Phase T Bharat Dynamics Ltd",
+            )
+        )
+        self.assertIsNotNone(cust)
+        self.assertTrue(cust.has_historical_context)
+
+        # Confirm invoice is linked and processed
+        inv = self.db.scalar(
+            select(Invoice).where(
+                Invoice.business_id == self.business_a_id,
+                Invoice.invoice_number == "HIST-RUPEE-101",
+            )
+        )
+        self.assertIsNotNone(inv)
+        self.assertEqual(inv.customer_id, cust.id)
+        self.assertEqual(inv.origin, InvoiceOrigin.HISTORICAL.value)
+        self.assertEqual(inv.processing_status, "PROCESSED")
+        self.assertEqual(float(inv.amount), 150000.00)
+
+    def test_phase_t_historical_upload_missing_due_date_enters_needs_review(self):
+        """
+        Verify historical invoice with missing due date (and no payment terms) does NOT fail,
+        but successfully creates the invoice with due_date=None and processing_status='NEEDS_REVIEW'.
+        """
+        pdf_bytes = _create_minimal_pdf()
+        parsed_inv = ExtractedInvoice(
+            invoice_number="HIST-NODUE-202",
+            customer_name="Phase T Stellar Motors",
+            customer_gstin=None,
+            invoice_date=date(2025, 10, 1),
+            due_date=None,  # Missing due date
+            amount=85000.50,
+            currency=None,  # Missing currency optional
+            payment_terms=None,
+        )
+
+        with patch("backend.app.workers.handlers.InvoiceParser.parse", return_value=ExtractionResult(success=True, invoice=parsed_inv, method="text")):
+            resp = self.client.post(
+                "/historical/invoices/upload",
+                files={"file": ("invoice_nodue.pdf", pdf_bytes, "application/pdf")},
+                headers={"Authorization": f"Bearer {self.token_a}"},
+            )
+            self.assertEqual(resp.status_code, 201)
+            task_id = uuid.UUID(resp.json()["task_id"])
+            task = self.db.get(Task, task_id)
+            handle_parse_invoice(self.db, task, task.payload)
+
+        self.db.expire_all()
+        inv = self.db.scalar(
+            select(Invoice).where(
+                Invoice.business_id == self.business_a_id,
+                Invoice.invoice_number == "HIST-NODUE-202",
+            )
+        )
+        self.assertIsNotNone(inv)
+        self.assertEqual(inv.processing_status, "NEEDS_REVIEW")
+        self.assertIsNone(inv.due_date)
+
+        # Invoice appears in review queue
+        rev_resp = self.client.get(
+            "/historical/invoices/review",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(rev_resp.status_code, 200)
+        review_items = rev_resp.json()
+        self.assertTrue(any(i["id"] == str(inv.id) for i in review_items))
+
+        # Complete review by supplying due date
+        patch_resp = self.client.patch(
+            f"/historical/invoices/{inv.id}/review",
+            json={"due_date": "2025-11-15"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(patch_resp.status_code, 200)
+        self.assertEqual(patch_resp.json()["processing_status"], "PROCESSED")
+        self.assertEqual(patch_resp.json()["due_date"], "2025-11-15")
+
+    def test_phase_t_company_auto_matching_case_insensitive_and_normalized(self):
+        """
+        Verify that when a historical invoice extracts a company whose name matches an existing
+        company case-insensitively or after normalization, it attaches to the existing customer
+        without creating a duplicate customer.
+        """
+        # Create initial company "Apex Precision Tools Pvt Ltd"
+        initial_res = self.client.post(
+            "/historical/companies",
+            json={"display_name": "Apex Precision Tools Pvt Ltd"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(initial_res.status_code, 201)
+        orig_cust_id = initial_res.json()["id"]
+
+        # Upload historical invoice with casing variation "apex precision tools pvt. ltd."
+        pdf_bytes = _create_minimal_pdf()
+        parsed_inv = ExtractedInvoice(
+            invoice_number="HIST-MATCH-303",
+            customer_name="apex precision tools pvt. ltd.",
+            customer_gstin=None,
+            invoice_date=date(2025, 9, 1),
+            due_date=date(2025, 10, 1),
+            amount=45000.00,
+            currency=None,
+            payment_terms=None,
+        )
+
+        with patch("backend.app.workers.handlers.InvoiceParser.parse", return_value=ExtractionResult(success=True, invoice=parsed_inv, method="text")):
+            resp = self.client.post(
+                "/historical/invoices/upload",
+                files={"file": ("invoice_match.pdf", pdf_bytes, "application/pdf")},
+                headers={"Authorization": f"Bearer {self.token_a}"},
+            )
+            self.assertEqual(resp.status_code, 201)
+            task_id = uuid.UUID(resp.json()["task_id"])
+            task = self.db.get(Task, task_id)
+            handle_parse_invoice(self.db, task, task.payload)
+
+        self.db.expire_all()
+        inv = self.db.scalar(
+            select(Invoice).where(
+                Invoice.business_id == self.business_a_id,
+                Invoice.invoice_number == "HIST-MATCH-303",
+            )
+        )
+        self.assertIsNotNone(inv)
+        # Must attach to original customer, not a newly spawned customer
+        self.assertEqual(str(inv.customer_id), orig_cust_id)
+
+        # Ensure no duplicate customer was created with that name in tenant
+        customers = self.db.scalars(
+            select(Customer).where(
+                Customer.business_id == self.business_a_id,
+                func.lower(Customer.display_name).like("%apex precision%"),
+            )
+        ).all()
+        self.assertEqual(len(customers), 1)
+
+    def test_phase_t_company_correction_reassign_to_existing_company(self):
+        """
+        Verify user can correct/replace company on a historical invoice by reassigning
+        it to an existing company workspace without creating duplicate company.
+        """
+        # Create Company 1 and Company 2
+        c1 = self.client.post(
+            "/historical/companies",
+            json={"display_name": "Company One Manufacturing"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        ).json()
+        c2 = self.client.post(
+            "/historical/companies",
+            json={"display_name": "Company Two Engineering"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        ).json()
+
+        # Create manual invoice under Company 1
+        inv_res = self.client.post(
+            f"/historical/companies/{c1['id']}/invoices/manual",
+            json={"amount": 75000.00, "due_date": "2025-08-15"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(inv_res.status_code, 201)
+        inv_id = inv_res.json()["id"]
+
+        # Reassign invoice to Company 2 using replacement_customer_id
+        corr_res = self.client.patch(
+            f"/historical/invoices/{inv_id}/company",
+            json={"replacement_customer_id": c2["id"]},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(corr_res.status_code, 200)
+        corr_data = corr_res.json()
+        self.assertEqual(corr_data["customer_id"], c2["id"])
+        self.assertEqual(corr_data["customer_name"], "Company Two Engineering")
+
+        # Verify detail of Company 2 now includes this invoice
+        c2_detail = self.client.get(
+            f"/historical/companies/{c2['id']}",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        ).json()
+        self.assertTrue(any(i["id"] == inv_id for i in c2_detail["invoices"]))
+
+        # Verify Company 1 now has no historical records (returns 404 or empty invoices)
+        c1_res = self.client.get(
+            f"/historical/companies/{c1['id']}",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        if c1_res.status_code == 200:
+            self.assertFalse(any(i["id"] == inv_id for i in c1_res.json()["invoices"]))
+        else:
+            self.assertEqual(c1_res.status_code, 404)
+
+    def test_phase_t_company_correction_new_company_requires_confirmation(self):
+        """
+        Verify that reassigning to a brand new company name without create_if_missing: true
+        fails cleanly (404/422), and succeeds when create_if_missing: true is provided.
+        """
+        c1 = self.client.post(
+            "/historical/companies",
+            json={"display_name": "Source Company Alpha"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        ).json()
+
+        inv_res = self.client.post(
+            f"/historical/companies/{c1['id']}/invoices/manual",
+            json={"amount": 92000.00, "due_date": "2025-07-20"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        inv_id = inv_res.json()["id"]
+
+        # 1. Attempt with create_if_missing: false -> should fail with 404
+        fail_res = self.client.patch(
+            f"/historical/invoices/{inv_id}/company",
+            json={
+                "replacement_company_name": "Target Company Beta",
+                "create_if_missing": False,
+            },
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(fail_res.status_code, 404)
+
+        # 2. Re-attempt with create_if_missing: true -> creates Target Company Beta and reassigns
+        succ_res = self.client.patch(
+            f"/historical/invoices/{inv_id}/company",
+            json={
+                "replacement_company_name": "Target Company Beta",
+                "create_if_missing": True,
+            },
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(succ_res.status_code, 200)
+        succ_data = succ_res.json()
+        self.assertEqual(succ_data["customer_name"], "Target Company Beta")
+
+        # Confirm Target Company Beta is now listed under Historical Data
+        hist_list = self.client.get(
+            "/historical/companies",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        ).json()
+        self.assertTrue(any(c["display_name"] == "Target Company Beta" for c in hist_list))
+
+    # ------------------------------------------------------------------
+    # Phase U Tests: Manual Historical Invoice, Payment Date, and GSTIN
+    # ------------------------------------------------------------------
+
+    def test_phase_u_manual_historical_invoice_with_payment_date_settlement(self):
+        """
+        Verify manual historical invoice creation inside a company workspace:
+        - Inherits company from selected workspace
+        - Generates a unique, server-side invoice identifier
+        - Persists due date and explicit payment date
+        - Marks factual payment status as PAID
+        - Records payment with provenance='manual'
+        """
+        # Create company
+        comp = self.client.post(
+            "/historical/companies",
+            json={"display_name": "Phase U Industries Pvt Ltd"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        ).json()
+        cid = comp["id"]
+
+        # Create manual historical invoice with amount, due_date, and payment_date
+        inv_res = self.client.post(
+            f"/historical/companies/{cid}/invoices/manual",
+            json={
+                "amount": 125000.00,
+                "due_date": "2025-09-30",
+                "payment_date": "2025-09-25",
+            },
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(inv_res.status_code, 201)
+        data = inv_res.json()
+        inv_id = data["id"]
+        inv_num = data["invoice_number"]
+
+        # Verify dynamic unique invoice number generated
+        self.assertIsNotNone(inv_num)
+        self.assertTrue(len(inv_num) > 10)
+        self.assertEqual(data["origin"], InvoiceOrigin.HISTORICAL.value)
+        self.assertEqual(data["due_date"], "2025-09-30")
+        self.assertEqual(data["payment_date"], "2025-09-25")
+        self.assertEqual(data["amount"], 125000.00)
+        self.assertEqual(data["total_paid"], 125000.00)
+        self.assertEqual(data["outstanding_balance"], 0.0)
+        self.assertEqual(data["payment_status"], "PAID")
+        self.assertEqual(data["payment_count"], 1)
+
+        # Verify in database
+        self.db.expire_all()
+        inv_db = self.db.get(Invoice, uuid.UUID(inv_id))
+        self.assertIsNotNone(inv_db)
+        self.assertEqual(str(inv_db.customer_id), cid)
+        self.assertEqual(inv_db.origin, InvoiceOrigin.HISTORICAL.value)
+        self.assertEqual(inv_db.due_date, date(2025, 9, 30))
+        self.assertEqual(len(inv_db.payments), 1)
+        pmt_db = inv_db.payments[0]
+        self.assertEqual(pmt_db.provenance, "manual")
+        self.assertEqual(pmt_db.payment_date.date(), date(2025, 9, 25))
+        self.assertEqual(float(pmt_db.amount), 125000.00)
+
+    def test_phase_u_manual_historical_invoice_without_payment_date_is_open(self):
+        """
+        Verify manual historical invoice without payment date:
+        - Does NOT fabricate a payment date or use invoice date
+        - Sets payment_status to 'OPEN'
+        - Outstanding balance equals full amount
+        """
+        comp = self.client.post(
+            "/historical/companies",
+            json={"display_name": "Phase U Unpaid Corp"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        ).json()
+        cid = comp["id"]
+
+        inv_res = self.client.post(
+            f"/historical/companies/{cid}/invoices/manual",
+            json={
+                "amount": 54000.00,
+                "due_date": "2025-10-15",
+            },
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(inv_res.status_code, 201)
+        data = inv_res.json()
+        self.assertEqual(data["payment_status"], "OPEN")
+        self.assertIsNone(data["payment_date"])
+        self.assertEqual(data["total_paid"], 0.0)
+        self.assertEqual(data["outstanding_balance"], 54000.00)
+        self.assertEqual(data["payment_count"], 0)
+
+    def test_phase_u_manual_invoice_id_uniqueness(self):
+        """
+        Create multiple manual invoices and ensure every generated identifier
+        is unique, non-empty, and database-enforced.
+        """
+        comp = self.client.post(
+            "/historical/companies",
+            json={"display_name": "Phase U Identifier Check Corp"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        ).json()
+        cid = comp["id"]
+
+        refs = set()
+        for i in range(5):
+            res = self.client.post(
+                f"/historical/companies/{cid}/invoices/manual",
+                json={
+                    "amount": 10000.00 + i * 1000,
+                    "due_date": "2025-08-01",
+                },
+                headers={"Authorization": f"Bearer {self.token_a}"},
+            )
+            self.assertEqual(res.status_code, 201)
+            num = res.json()["invoice_number"]
+            self.assertTrue(num)
+            self.assertNotIn(num, refs)
+            refs.add(num)
+        self.assertEqual(len(refs), 5)
+
+    def test_phase_u_optional_gstin_and_generic_checksum_validation(self):
+        """
+        Verify GSTIN behavior:
+        1. Company creation without GSTIN succeeds.
+        2. Genuinely valid 15-char GSTINs with checksum are accepted.
+        3. Invalid checksum or malformed GSTIN (such as '27SYNTHETIC0001Z1') is rejected.
+        4. Clear/remove GSTIN succeeds.
+        """
+        # 1. Company without GSTIN
+        res_no_gst = self.client.post(
+            "/historical/companies",
+            json={"display_name": "No GSTIN Enterprises"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(res_no_gst.status_code, 201)
+        cid = res_no_gst.json()["id"]
+
+        # 2. Add valid GSTIN (Maharashtra: 27AAPFU0939F1ZV)
+        patch_valid = self.client.patch(
+            f"/historical/companies/{cid}",
+            json={"gstin": "27AAPFU0939F1ZV"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(patch_valid.status_code, 200)
+        self.assertEqual(patch_valid.json()["gstin"], "27AAPFU0939F1ZV")
+
+        # 3. Reject invalid GSTIN (27SYNTHETIC0001Z1) - not a valid standard GSTIN
+        patch_synth = self.client.patch(
+            f"/historical/companies/{cid}",
+            json={"gstin": "27SYNTHETIC0001Z1"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(patch_synth.status_code, 422)
+
+        # 4. Reject bad check digit on structurally plausible GSTIN
+        patch_bad_check = self.client.patch(
+            f"/historical/companies/{cid}",
+            json={"gstin": "27AAPFU0939F1ZU"},  # Bad check digit (U instead of V)
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(patch_bad_check.status_code, 422)
+
+        # 5. Clear GSTIN
+        patch_clear = self.client.patch(
+            f"/historical/companies/{cid}",
+            json={"gstin": None},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(patch_clear.status_code, 200)
+        self.assertIsNone(patch_clear.json()["gstin"])
+
+    def test_phase_u_manual_invoice_tenant_isolation(self):
+        """
+        Verify tenant isolation on manual invoice endpoints:
+        Tenant B cannot create or view manual historical invoices for Tenant A's company.
+        """
+        comp_a = self.client.post(
+            "/historical/companies",
+            json={"display_name": "Tenant A Secret Supplier"},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        ).json()
+        cid_a = comp_a["id"]
+
+        # Tenant B attempts to create invoice under Tenant A's company -> 404
+        post_b = self.client.post(
+            f"/historical/companies/{cid_a}/invoices/manual",
+            json={"amount": 20000.00, "due_date": "2025-06-30"},
+            headers={"Authorization": f"Bearer {self.token_b}"},
+        )
+        self.assertEqual(post_b.status_code, 404)
+
+        # Tenant B attempts to view Tenant A's company detail -> 404
+        get_b = self.client.get(
+            f"/historical/companies/{cid_a}",
+            headers={"Authorization": f"Bearer {self.token_b}"},
+        )
+        self.assertEqual(get_b.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

@@ -17,6 +17,7 @@ from backend.app.schemas.invoice import (
     InvoiceUploadResponse,
     InvoiceDetailResponse,
 )
+from backend.app.schemas.historical import HistoricalInvoiceCompanyCorrection
 from backend.app.schemas.payment import (
     ManualPaymentRequest,
     ManualPaymentResponse,
@@ -27,6 +28,7 @@ from backend.app.schemas.payment_proof import (
     PaymentProofResponse,
     PaymentProofUploadResponse,
 )
+from backend.app.services.customer_identity import correct_invoice_customer
 from backend.app.services.invoice_service import (
     get_document_by_id,
     get_invoice_by_id,
@@ -513,6 +515,51 @@ def get_invoice(
     )
     total_paid, outstanding = get_invoice_payment_summary(db, inv)
     response = InvoiceDetailResponse.model_validate(inv)
+    response.total_paid = float(total_paid)
+    response.outstanding_balance = float(outstanding)
+    response.payments = [PaymentResponse.model_validate(p) for p in payments]
+    return response
+
+
+@router.patch(
+    "/{invoice_id}/company",
+    response_model=InvoiceDetailResponse,
+    summary="Correct or reassign the customer/company associated with an invoice",
+)
+def correct_invoice_company_endpoint(
+    invoice_id: uuid.UUID,
+    payload: HistoricalInvoiceCompanyCorrection,
+    tenant_ctx: TenantContext = Depends(get_tenant_context),
+    db: Session = Depends(get_db),
+) -> InvoiceDetailResponse:
+    """
+    Correct or reassign the customer associated with an invoice.
+    Invalidates any stale prediction for this invoice and recalculates genuine XGBoost prediction if eligible.
+    """
+    try:
+        invoice = correct_invoice_customer(
+            db=db,
+            business_id=tenant_ctx.business_id,
+            invoice_id=invoice_id,
+            replacement_customer_id=payload.replacement_customer_id,
+            replacement_company_name=payload.replacement_company_name,
+            create_if_missing=payload.create_if_missing,
+            gstin=payload.gstin,
+            recalculate_prediction=True,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    payments = get_invoice_payments(
+        db=db,
+        business_id=tenant_ctx.business_id,
+        invoice_id=invoice.id,
+    )
+    total_paid, outstanding = get_invoice_payment_summary(db, invoice)
+    response = InvoiceDetailResponse.model_validate(invoice)
     response.total_paid = float(total_paid)
     response.outstanding_balance = float(outstanding)
     response.payments = [PaymentResponse.model_validate(p) for p in payments]

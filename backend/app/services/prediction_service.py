@@ -108,6 +108,12 @@ def get_predictor() -> V1Predictor:
     return _cached_predictor
 
 
+def reset_predictor() -> None:
+    """Reset the cached predictor singleton (for testing artifact reloads)."""
+    global _cached_predictor
+    _cached_predictor = None
+
+
 class PredictionServiceError(Exception):
     """Base exception for application prediction service failures."""
     pass
@@ -155,7 +161,7 @@ def get_eligible_prior_payments(db: Session, invoice: Invoice) -> list[Payment]:
                 Payment.amount > 0,
                 Invoice.business_id == invoice.business_id,
                 Invoice.customer_id == invoice.customer_id,
-                Invoice.origin == InvoiceOrigin.HISTORICAL.value,
+                Invoice.origin.in_([InvoiceOrigin.HISTORICAL.value, InvoiceOrigin.CURRENT.value]),
                 Invoice.due_date.is_not(None),
                 or_(
                     Invoice.invoice_date < invoice.invoice_date,
@@ -260,8 +266,14 @@ def build_inference_features(db: Session, invoice: Invoice) -> pd.DataFrame:
             .where(
                 Invoice.business_id == invoice.business_id,
                 Invoice.customer_id == invoice.customer_id,
-                Invoice.origin == InvoiceOrigin.HISTORICAL.value,
-                Invoice.invoice_date < ref_date,
+                Invoice.origin.in_([InvoiceOrigin.HISTORICAL.value, InvoiceOrigin.CURRENT.value]),
+                or_(
+                    Invoice.invoice_date < ref_date,
+                    and_(
+                        Invoice.invoice_date.is_(None),
+                        Invoice.due_date < ref_date,
+                    ),
+                ),
                 Invoice.id != invoice.id,
             )
             .order_by(Invoice.invoice_date.asc())
@@ -270,7 +282,7 @@ def build_inference_features(db: Session, invoice: Invoice) -> pd.DataFrame:
 
     cust_prior_invoice_count = len(prior_invoices)
     if cust_prior_invoice_count > 0:
-        prev_inv_date = max(inv.invoice_date for inv in prior_invoices)
+        prev_inv_date = max((inv.invoice_date or inv.due_date) for inv in prior_invoices)
         days_since_prev_invoice = float(max(0, (ref_date - prev_inv_date).days))
     else:
         days_since_prev_invoice = COLD_START_IMPUTATION["days_since_prev_invoice"]

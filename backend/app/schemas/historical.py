@@ -8,14 +8,24 @@ from datetime import date
 from typing import List, Optional
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from decimal import Decimal
 
 
 class HistoricalCompanyCreate(BaseModel):
     """Explicit creation request for a tenant-owned historical company."""
-    display_name: str = Field(min_length=1, max_length=255)
+    display_name: Optional[str] = Field(default=None, max_length=255)
+    company_name: Optional[str] = Field(default=None, max_length=255)
     gstin: Optional[str] = Field(default=None, max_length=32)
+
+    @model_validator(mode="after")
+    def populate_and_validate_name(self) -> "HistoricalCompanyCreate":
+        name = (self.company_name or self.display_name or "").strip()
+        if not name:
+            raise ValueError("Company name is required.")
+        if not self.display_name:
+            self.display_name = name
+        return self
 
 
 class HistoricalCompanyUpdate(BaseModel):
@@ -53,9 +63,31 @@ class HistoricalCompanySummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class HistoricalInvoiceCompanyCorrection(BaseModel):
+    """Request to change/correct the company associated with a historical invoice."""
+    replacement_customer_id: Optional[uuid.UUID] = None
+    replacement_company_name: Optional[str] = Field(default=None, max_length=255)
+    customer_id: Optional[uuid.UUID] = None
+    company_name: Optional[str] = Field(default=None, max_length=255)
+    create_if_missing: bool = False
+    gstin: Optional[str] = Field(default=None, max_length=32)
+
+    @model_validator(mode="after")
+    def populate_targets(self) -> "HistoricalInvoiceCompanyCorrection":
+        if not self.replacement_customer_id and self.customer_id:
+            self.replacement_customer_id = self.customer_id
+        if not self.replacement_company_name and self.company_name:
+            self.replacement_company_name = self.company_name
+        if not self.replacement_customer_id and not (self.replacement_company_name and self.replacement_company_name.strip()):
+            raise ValueError("Either replacement_customer_id or replacement_company_name is required.")
+        return self
+
+
 class HistoricalInvoiceItem(BaseModel):
     """Historical invoice item detail with factual payment attributes."""
     id: uuid.UUID
+    customer_id: Optional[uuid.UUID] = None
+    customer_name: Optional[str] = None
     invoice_number: Optional[str] = None
     invoice_date: Optional[date] = None
     due_date: Optional[date] = None

@@ -7,11 +7,12 @@ import unicodedata
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from backend.app.models.customer import Customer
 from backend.app.models.invoice import Invoice
+from backend.app.models.prediction import PredictionResult
 
 GSTIN_PATTERN = re.compile(
     r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$"
@@ -276,8 +277,9 @@ def resolve_unresolved_invoice(
     business_id: uuid.UUID,
     invoice_id: uuid.UUID,
     customer_id: uuid.UUID,
+    recalculate_prediction: bool = True,
 ) -> Invoice:
-    """Apply a later confirmed match and clear the unresolved display value."""
+    """Apply a later confirmed match, clear the unresolved display value, and update predictions."""
     invoice = db.scalar(
         select(Invoice).where(
             Invoice.id == invoice_id,
@@ -294,5 +296,147 @@ def resolve_unresolved_invoice(
         raise ValueError("Invoice and customer must exist in the same tenant.")
     invoice.customer_id = customer.id
     invoice.unresolved_customer_name = None
+
+    # Invalidate any stale prediction for this invoice
+    db.execute(
+        delete(PredictionResult).where(
+            PredictionResult.business_id == business_id,
+            PredictionResult.invoice_id == invoice_id,
+        )
+    )
     db.flush()
+
+    if recalculate_prediction:
+        from backend.app.services.prediction_service import (
+            evaluate_prediction_eligibility,
+            predict_for_invoice,
+        )
+        eligibility = evaluate_prediction_eligibility(db, invoice)
+        if (
+            eligibility.prediction_available
+            and invoice.processing_status == "PROCESSED"
+            and invoice.amount
+            and float(invoice.amount) > 0
+            and invoice.invoice_date
+            and invoice.due_date
+        ):
+            try:
+                predict_for_invoice(db, invoice_id, business_id)
+            except Exception:
+                pass
+
+    return invoice
+
+
+def correct_invoice_customer(
+    db: Session,
+    *,
+    business_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+    replacement_customer_id: uuid.UUID | None = None,
+    replacement_company_name: str | None = None,
+    create_if_missing: bool = False,
+    gstin: str | None = None,
+    recalculate_prediction: bool = True,
+) -> Invoice:
+    """
+    Correct or reassign the customer associated with an invoice (CURRENT or HISTORICAL).
+    - Uses normalized & case-insensitive matching.
+    - Invalidates any stale prediction for this invoice.
+    - If recalculate_prediction is True, recalculates prediction eligibility for the corrected customer
+      and executes genuine XGBoost inference if eligible.
+    - Preserves origin strictly (CURRENT remains CURRENT).
+    """
+    invoice = db.scalar(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            Invoice.business_id == business_id,
+        )
+    )
+    if invoice is None:
+        raise LookupError(f"Invoice {invoice_id} not found.")
+
+    target_customer: Customer | None = None
+    if replacement_customer_id:
+        target_customer = db.scalar(
+            select(Customer).where(
+                Customer.id == replacement_customer_id,
+                Customer.business_id == business_id,
+            )
+        )
+        if target_customer is None:
+            raise LookupError("Replacement company not found.")
+    elif replacement_company_name and replacement_company_name.strip():
+        clean_name = replacement_company_name.strip()
+        norm_name = normalize_customer_name(clean_name)
+        if not clean_name or not norm_name:
+            raise ValueError("Replacement company name cannot be empty.")
+
+        target_customer = db.scalar(
+            select(Customer).where(
+                Customer.business_id == business_id,
+                (Customer.normalized_name == norm_name)
+                | (func.lower(Customer.display_name) == clean_name.lower()),
+            )
+        )
+        if target_customer is None and gstin:
+            clean_gstin = normalize_gstin(gstin)
+            if clean_gstin:
+                target_customer = db.scalar(
+                    select(Customer).where(
+                        Customer.business_id == business_id,
+                        Customer.normalized_gstin == clean_gstin,
+                    )
+                )
+
+        if target_customer is None:
+            if not create_if_missing:
+                raise LookupError(
+                    f"Company '{clean_name}' does not exist in this workspace. Please confirm to create a new company."
+                )
+            clean_gstin = gstin.strip() if gstin and gstin.strip() else None
+            if clean_gstin and normalize_gstin(clean_gstin) is None:
+                raise ValueError("GSTIN structure or checksum is invalid.")
+            target_customer = create_customer(
+                db,
+                business_id=business_id,
+                display_name=clean_name,
+                gstin=clean_gstin,
+            )
+    else:
+        raise ValueError("Either replacement_customer_id or replacement_company_name must be provided.")
+
+    invoice.customer_id = target_customer.id
+    invoice.unresolved_customer_name = None
+
+    # Invalidate any stale prediction for this invoice
+    db.execute(
+        delete(PredictionResult).where(
+            PredictionResult.business_id == business_id,
+            PredictionResult.invoice_id == invoice_id,
+        )
+    )
+    db.flush()
+
+    if recalculate_prediction:
+        from backend.app.services.prediction_service import (
+            evaluate_prediction_eligibility,
+            predict_for_invoice,
+        )
+        eligibility = evaluate_prediction_eligibility(db, invoice)
+        if (
+            eligibility.prediction_available
+            and invoice.processing_status == "PROCESSED"
+            and invoice.amount
+            and float(invoice.amount) > 0
+            and invoice.invoice_date
+            and invoice.due_date
+        ):
+            try:
+                predict_for_invoice(db, invoice_id, business_id)
+            except Exception:
+                pass
+
+    db.commit()
+    db.refresh(invoice)
     return invoice

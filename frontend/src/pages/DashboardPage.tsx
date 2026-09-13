@@ -15,24 +15,26 @@ export function DashboardPage() {
   const today = new Date().toISOString().slice(0, 10);
   const open = invoices.filter(i => i.payment_status === "OPEN");
   const pred = new Map(predictions.map(p => [p.invoice_id, p]));
-  const overdue = open.filter(i => i.due_date < today);
+  const overdue = open.filter(i => Boolean(i.due_date) && i.due_date! < today);
   const high = open.filter(i => pred.get(i.id)?.risk_tier === "HIGH");
   const expected = open.filter(i => pred.get(i.id)?.expected_payment_date);
 
   const displayTotal = (items: Invoice[]) => {
     if (!items.length) return "₹0";
-    const currencies = [...new Set(items.map(i => i.currency))];
-    return currencies.length === 1 ? money(items.reduce((sum, i) => sum + i.amount, 0), currencies[0]) : "—";
+    const currencies = [...new Set(items.map(i => i.currency).filter(Boolean))];
+    return currencies.length === 1 ? money(items.reduce((sum, i) => sum + i.amount, 0), currencies[0]) : money(items.reduce((sum, i) => sum + i.amount, 0), "INR");
   };
 
   const expectedAmount = expected.reduce((sum, i) => sum + i.amount, 0);
-  const expectedCurrency = expected.length ? ([...new Set(expected.map(i => i.currency))].length === 1 ? expected[0].currency : "—") : "INR";
-  const displayExpected = expected.length ? (expectedCurrency === "—" ? "—" : money(expectedAmount, expectedCurrency)) : "₹0";
+  const expectedCurrencies = [...new Set(expected.map(i => i.currency).filter(Boolean))];
+  const expectedCurrency = expectedCurrencies.length === 1 ? expectedCurrencies[0]! : "INR";
+  const displayExpected = expected.length ? money(expectedAmount, expectedCurrency) : "₹0";
 
   const buckets = [["Current", "current"], ["1–30 days", "1-30"], ["31–60 days", "31-60"], ["61–90 days", "61-90"], ["90+ days", "90+"]].map(([label, key]) => ({
     label,
     key,
     items: open.filter(i => {
+      if (!i.due_date) return false;
       const age = Math.max(0, Math.floor((new Date(today).getTime() - new Date(i.due_date).getTime()) / 86400000));
       return key === "current" ? i.due_date >= today : key === "1-30" ? age <= 30 : key === "31-60" ? age <= 60 && age >= 31 : key === "61-90" ? age <= 90 && age >= 61 : age > 90;
     })
@@ -167,7 +169,7 @@ function Projection({ invoices, predictions }: { invoices: Invoice[]; prediction
               <br />
               {items.length === 1 ? money(amount, items[0].currency) : items.length + " invoices"}
               <br />
-              {items.map(i => i.invoice_number + " · " + money(i.amount, i.currency)).join("\n")}
+              {items.map(i => (i.invoice_number || "—") + " · " + money(i.amount, i.currency)).join("\n")}
             </span>
           </div>
         );

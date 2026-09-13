@@ -89,21 +89,29 @@ class V1Predictor:
 
         # Load classifier
         clf_path = self.model_dir / clf_meta["artifact_path"]
+        if not clf_path.exists():
+            raise InferenceError(f"Classifier model artifact not found: {clf_path}")
         self.classifier = xgb.XGBClassifier()
         self.classifier.load_model(str(clf_path))
         logger.info("Loaded classifier: %s", clf_path.name)
 
         # Load timing model
         timing_path = self.model_dir / timing_meta["artifact_path"]
+        if not timing_path.exists():
+            raise InferenceError(f"Timing model artifact not found: {timing_path}")
         self.timing_model = xgb.XGBRegressor()
         self.timing_model.load_model(str(timing_path))
         logger.info("Loaded timing model: %s", timing_path.name)
 
         # Load encoders
         clf_enc_path = self.model_dir / clf_meta["encoder_path"]
+        if not clf_enc_path.exists():
+            raise InferenceError(f"Classifier encoder artifact not found: {clf_enc_path}")
         self.classifier_encoder = joblib.load(str(clf_enc_path))
 
         timing_enc_path = self.model_dir / timing_meta["encoder_path"]
+        if not timing_enc_path.exists():
+            raise InferenceError(f"Timing encoder artifact not found: {timing_enc_path}")
         self.timing_encoder = joblib.load(str(timing_enc_path))
         logger.info("Loaded categorical encoders")
 

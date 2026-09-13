@@ -2,6 +2,7 @@ import { LayoutDashboard, ReceiptText, Upload, CalendarClock, LogOut, Menu, X } 
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useState } from "react";
 import { useAuth } from "../features/auth";
+import { ErrorBoundary } from "./ErrorBoundary";
 const links = [
   { to: "/", label: "Overview", icon: LayoutDashboard },
   { to: "/invoices", label: "Invoices", icon: ReceiptText },
@@ -51,7 +52,7 @@ export function AppShell() {
           </div>
           <Link to="/upload" className="button primary">Upload files</Link>
         </header>
-        <div className="content"><Outlet /></div>
+        <div className="content"><ErrorBoundary><Outlet /></ErrorBoundary></div>
       </main>
     </div>
   );

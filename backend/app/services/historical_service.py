@@ -12,7 +12,7 @@ from typing import List, Optional
 import uuid
 
 from fastapi import HTTPException, status
-from sqlalchemy import String, func, null, select
+from sqlalchemy import String, delete, func, null, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -20,6 +20,8 @@ from backend.app.models.customer import Customer
 from backend.app.models.invoice import Invoice, InvoiceOrigin
 from backend.app.models.invoice_document import InvoiceDocument
 from backend.app.models.payment import Payment
+from backend.app.models.payment_proof import PaymentProof
+from backend.app.models.prediction import PredictionResult
 from backend.app.models.task import Task
 from backend.app.schemas.historical import (
     HistoricalCompanyDetail,
@@ -31,6 +33,7 @@ from backend.app.services.customer_identity import (
     normalize_customer_name,
     normalize_gstin,
 )
+from backend.app.services.storage import get_storage
 
 
 def create_historical_company(
@@ -40,9 +43,15 @@ def create_historical_company(
     gstin: Optional[str] = None,
 ) -> HistoricalCompanySummary:
     """Create one explicit historical workspace, rejecting normalized duplicates."""
-    normalized_name = normalize_customer_name(display_name)
-    if not normalized_name:
+    clean_name = display_name.strip() if display_name else ""
+    normalized_name = normalize_customer_name(clean_name)
+    if not clean_name or not normalized_name:
         raise ValueError("Company name is required.")
+
+    clean_gstin = gstin.strip() if gstin and gstin.strip() else None
+    if clean_gstin and normalize_gstin(clean_gstin) is None:
+        raise ValueError("GSTIN structure or checksum is invalid.")
+
     existing = db.scalar(
         select(Customer).where(
             Customer.business_id == business_id,
@@ -52,11 +61,22 @@ def create_historical_company(
     if existing is not None:
         raise FileExistsError("A company with this name already exists.")
 
+    if clean_gstin:
+        norm_gstin = normalize_gstin(clean_gstin)
+        existing_gstin = db.scalar(
+            select(Customer).where(
+                Customer.business_id == business_id,
+                Customer.normalized_gstin == norm_gstin,
+            )
+        )
+        if existing_gstin is not None:
+            raise FileExistsError("A company with this GSTIN already exists.")
+
     customer = create_customer(
         db,
         business_id=business_id,
-        display_name=display_name,
-        gstin=gstin,
+        display_name=clean_name,
+        gstin=clean_gstin,
     )
     customer.has_historical_context = True
     try:
@@ -203,7 +223,16 @@ def list_historical_companies(
         )
     )
 
-    eligible_subq = hist_invoice_subq.union(hist_payment_subq)
+    paid_current_subq = (
+        select(Invoice.customer_id)
+        .join(Payment, Payment.invoice_id == Invoice.id)
+        .where(
+            Invoice.business_id == business_id,
+            Invoice.customer_id.isnot(None),
+        )
+    )
+
+    eligible_subq = hist_invoice_subq.union(hist_payment_subq, paid_current_subq)
 
     query = select(Customer).where(
         Customer.business_id == business_id,
@@ -211,28 +240,37 @@ def list_historical_companies(
     )
 
     if search and search.strip():
-        norm_search = normalize_customer_name(search)
-        raw_search = f"%{search.strip().lower()}%"
+        clean_search = search.strip()
+        norm_search = normalize_customer_name(clean_search)
+        raw_search = f"%{clean_search.lower()}%"
+        search_conditions = [
+            func.lower(Customer.display_name).like(raw_search),
+            func.lower(Customer.normalized_name).like(raw_search),
+            (Customer.gstin.isnot(None) & func.lower(Customer.gstin).like(raw_search)),
+        ]
         if norm_search:
             norm_pattern = f"%{norm_search}%"
-            query = query.where(
-                Customer.normalized_name.contains(norm_pattern)
-                | func.lower(Customer.display_name).like(raw_search)
-            )
-        else:
-            query = query.where(func.lower(Customer.display_name).like(raw_search))
+            search_conditions.append(Customer.normalized_name.contains(norm_pattern))
+        query = query.where(or_(*search_conditions))
 
     customers = list(db.scalars(query.order_by(Customer.display_name.asc())).all())
 
     results: List[HistoricalCompanySummary] = []
     for cust in customers:
-        # Load all historical invoices for this customer
+        # Load invoices contributing to customer receivables / payment history
         invoices = list(
             db.scalars(
                 select(Invoice).where(
                     Invoice.business_id == business_id,
                     Invoice.customer_id == cust.id,
-                    Invoice.origin == InvoiceOrigin.HISTORICAL.value,
+                    or_(
+                        Invoice.origin == InvoiceOrigin.HISTORICAL.value,
+                        Invoice.id.in_(
+                            select(Payment.invoice_id).where(
+                                Payment.business_id == business_id
+                            )
+                        ),
+                    ),
                 )
             ).all()
         )
@@ -305,14 +343,22 @@ def get_historical_company_detail(
     if customer is None:
         return None
 
-    has_historical_invoice = db.scalar(
-        select(Invoice.id).where(
-            Invoice.business_id == business_id,
-            Invoice.customer_id == customer_id,
-            Invoice.origin == InvoiceOrigin.HISTORICAL.value,
-        ).limit(1)
-    ) is not None
-    if not customer.has_historical_context and not has_historical_invoice:
+    has_history = (
+        customer.has_historical_context
+        or db.scalar(
+            select(Invoice.id).where(
+                Invoice.business_id == business_id,
+                Invoice.customer_id == customer_id,
+                or_(
+                    Invoice.origin == InvoiceOrigin.HISTORICAL.value,
+                    Invoice.id.in_(
+                        select(Payment.invoice_id).where(Payment.business_id == business_id)
+                    ),
+                ),
+            ).limit(1)
+        ) is not None
+    )
+    if not has_history:
         return None
 
     invoices = list(
@@ -321,7 +367,12 @@ def get_historical_company_detail(
             .where(
                 Invoice.business_id == business_id,
                 Invoice.customer_id == customer_id,
-                Invoice.origin == InvoiceOrigin.HISTORICAL.value,
+                or_(
+                    Invoice.origin == InvoiceOrigin.HISTORICAL.value,
+                    Invoice.id.in_(
+                        select(Payment.invoice_id).where(Payment.business_id == business_id)
+                    ),
+                ),
             )
             .order_by(Invoice.invoice_date.desc(), Invoice.created_at.desc())
         ).all()
@@ -351,6 +402,8 @@ def get_historical_company_detail(
         invoice_items.append(
             HistoricalInvoiceItem(
                 id=inv.id,
+                customer_id=customer.id,
+                customer_name=customer.display_name,
                 invoice_number=inv.invoice_number,
                 invoice_date=inv.invoice_date,
                 due_date=inv.due_date,
@@ -526,10 +579,22 @@ def complete_historical_invoice_review(
         )
         if customer is None:
             raise LookupError("Company not found.")
-    elif company_name:
-        customer = create_customer(
-            db, business_id=business_id, display_name=company_name, gstin=gstin
+    elif company_name and company_name.strip():
+        clean_name = company_name.strip()
+        norm_name = normalize_customer_name(clean_name)
+        existing = db.scalar(
+            select(Customer).where(
+                Customer.business_id == business_id,
+                (Customer.normalized_name == norm_name)
+                | (func.lower(Customer.display_name) == clean_name.lower()),
+            )
         )
+        if existing is not None:
+            customer = existing
+        else:
+            customer = create_customer(
+                db, business_id=business_id, display_name=clean_name, gstin=gstin
+            )
     else:
         customer = invoice.customer
     if customer:
@@ -554,3 +619,268 @@ def complete_historical_invoice_review(
     db.commit()
     db.refresh(invoice)
     return invoice
+
+
+def correct_historical_invoice_company(
+    db: Session,
+    business_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+    *,
+    replacement_customer_id: Optional[uuid.UUID] = None,
+    replacement_company_name: Optional[str] = None,
+    create_if_missing: bool = False,
+    gstin: Optional[str] = None,
+) -> Invoice:
+    """
+    Correct or change the company associated with a historical invoice.
+    - Tenant-scoped
+    - Uses existing company/customer identity matching (case-insensitive & normalized)
+    - If company exists: attaches without creating duplicate
+    - If company does not exist: creates only after explicit user confirmation (create_if_missing=True)
+    - Preserves historical status
+    - Safely updates historical invoice association
+    """
+    invoice = db.scalar(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            Invoice.business_id == business_id,
+            Invoice.origin == InvoiceOrigin.HISTORICAL.value,
+        )
+    )
+    if invoice is None:
+        raise LookupError("Historical invoice not found.")
+
+    current_customer = invoice.customer
+
+    if replacement_customer_id:
+        target_customer = db.scalar(
+            select(Customer).where(
+                Customer.id == replacement_customer_id,
+                Customer.business_id == business_id,
+            )
+        )
+        if target_customer is None:
+            raise LookupError("Replacement company not found.")
+    elif replacement_company_name and replacement_company_name.strip():
+        clean_name = replacement_company_name.strip()
+        norm_name = normalize_customer_name(clean_name)
+        if not clean_name or not norm_name:
+            raise ValueError("Replacement company name cannot be empty.")
+
+        # 1. Search existing company case-insensitively and by normalized name within tenant
+        target_customer = db.scalar(
+            select(Customer).where(
+                Customer.business_id == business_id,
+                (Customer.normalized_name == norm_name)
+                | (func.lower(Customer.display_name) == clean_name.lower()),
+            )
+        )
+        if target_customer is None and gstin:
+            clean_gstin = normalize_gstin(gstin)
+            if clean_gstin:
+                target_customer = db.scalar(
+                    select(Customer).where(
+                        Customer.business_id == business_id,
+                        Customer.normalized_gstin == clean_gstin,
+                    )
+                )
+
+        if target_customer is None:
+            if not create_if_missing:
+                raise LookupError(
+                    f"Company '{clean_name}' does not exist in this workspace. Please confirm to create a new company."
+                )
+            clean_gstin = gstin.strip() if gstin and gstin.strip() else None
+            if clean_gstin and normalize_gstin(clean_gstin) is None:
+                raise ValueError("GSTIN structure or checksum is invalid.")
+            target_customer = create_customer(
+                db,
+                business_id=business_id,
+                display_name=clean_name,
+                gstin=clean_gstin,
+            )
+    else:
+        raise ValueError("Either replacement_customer_id or replacement_company_name must be provided.")
+
+    target_customer.has_historical_context = True
+    invoice.customer_id = target_customer.id
+    invoice.unresolved_customer_name = None
+
+    if invoice.due_date:
+        invoice.processing_status = "PROCESSED"
+    else:
+        invoice.processing_status = "NEEDS_REVIEW"
+
+    if invoice.document:
+        invoice.document.processing_status = invoice.processing_status
+        if not invoice.due_date:
+            invoice.document.error_message = "Manual review required: due date."
+        else:
+            invoice.document.error_message = None
+
+    # If previous customer had historical context and no longer has any historical data:
+    if current_customer and current_customer.id != target_customer.id:
+        remaining_hist_inv = db.scalar(
+            select(func.count(Invoice.id)).where(
+                Invoice.business_id == business_id,
+                Invoice.customer_id == current_customer.id,
+                Invoice.origin == InvoiceOrigin.HISTORICAL.value,
+                Invoice.id != invoice.id,
+            )
+        )
+        remaining_hist_pmt = db.scalar(
+            select(func.count(Payment.id)).where(
+                Payment.business_id == business_id,
+                Payment.customer_identity_key == f"customer:{current_customer.id}",
+                Payment.provenance.in_(["legacy", "import"]),
+            )
+        )
+        if (remaining_hist_inv or 0) == 0 and (remaining_hist_pmt or 0) == 0:
+            current_customer.has_historical_context = False
+
+    # Invalidate any stale prediction for this invoice
+    db.execute(
+        delete(PredictionResult).where(
+            PredictionResult.business_id == business_id,
+            PredictionResult.invoice_id == invoice.id,
+        )
+    )
+
+    db.commit()
+    db.refresh(invoice)
+    return invoice
+
+
+def delete_historical_company(
+    db: Session,
+    business_id: uuid.UUID,
+    customer_id: uuid.UUID,
+) -> dict:
+    """
+    Transactionally delete historical company data.
+    - If company has operational (CURRENT) invoices:
+      Keep the Customer and CURRENT data, but remove all HISTORICAL invoices,
+      their payments, predictions, payment proofs, tasks, and document files,
+      and set customer.has_historical_context = False.
+    - If company has ONLY historical data:
+      Safely remove the Customer row completely, along with all historical records.
+    """
+    customer = db.scalar(
+        select(Customer).where(
+            Customer.id == customer_id,
+            Customer.business_id == business_id,
+        )
+    )
+    if customer is None:
+        raise LookupError("Historical company not found.")
+
+    current_invoices = list(
+        db.scalars(
+            select(Invoice).where(
+                Invoice.business_id == business_id,
+                Invoice.customer_id == customer_id,
+                Invoice.origin == InvoiceOrigin.CURRENT.value,
+            )
+        ).all()
+    )
+    has_current_invoices = len(current_invoices) > 0
+
+    historical_invoices = list(
+        db.scalars(
+            select(Invoice).where(
+                Invoice.business_id == business_id,
+                Invoice.customer_id == customer_id,
+                Invoice.origin == InvoiceOrigin.HISTORICAL.value,
+            )
+        ).all()
+    )
+    hist_inv_ids = [inv.id for inv in historical_invoices]
+
+    storage_keys_to_delete: list[str] = []
+
+    # Collect documents associated with historical invoices
+    docs: list[InvoiceDocument] = []
+    if hist_inv_ids:
+        docs = list(
+            db.scalars(
+                select(InvoiceDocument).where(
+                    InvoiceDocument.business_id == business_id,
+                    (InvoiceDocument.invoice_id.in_(hist_inv_ids))
+                    | (InvoiceDocument.id.in_([inv.document_id for inv in historical_invoices if inv.document_id is not None])),
+                )
+            ).all()
+        )
+    for doc in docs:
+        if doc.storage_key:
+            storage_keys_to_delete.append(doc.storage_key)
+
+    # Collect payment proofs for historical invoices
+    if hist_inv_ids:
+        proofs = list(
+            db.scalars(
+                select(PaymentProof).where(
+                    PaymentProof.business_id == business_id,
+                    PaymentProof.invoice_id.in_(hist_inv_ids),
+                )
+            ).all()
+        )
+        for proof in proofs:
+            if proof.storage_key:
+                storage_keys_to_delete.append(proof.storage_key)
+
+    # Unlink circular invoice <-> document references
+    for inv in historical_invoices:
+        inv.document_id = None
+    for doc in docs:
+        doc.invoice_id = None
+    db.flush()
+
+    # Delete documents
+    for doc in docs:
+        db.delete(doc)
+    db.flush()
+
+    # Delete historical invoices (cascades payments, predictions, payment proofs, tasks)
+    for inv in historical_invoices:
+        db.delete(inv)
+    db.flush()
+
+    # Delete standalone historical payments for this customer (with no invoice_id)
+    standalone_payments = list(
+        db.scalars(
+            select(Payment).where(
+                Payment.business_id == business_id,
+                Payment.customer_identity_key == f"customer:{customer_id}",
+                Payment.invoice_id.is_(None),
+            )
+        ).all()
+    )
+    for sp in standalone_payments:
+        db.delete(sp)
+    db.flush()
+
+    if has_current_invoices:
+        customer.has_historical_context = False
+        db.add(customer)
+        db.flush()
+        action = "historical_records_removed"
+    else:
+        db.delete(customer)
+        db.flush()
+        action = "company_deleted"
+
+    db.commit()
+
+    # Post-commit: delete physical storage files
+    storage = get_storage()
+    for key in storage_keys_to_delete:
+        try:
+            storage.delete(key)
+        except Exception as exc:
+            logger.warning("Could not delete storage file %s during company deletion: %s", key, exc)
+
+    return {
+        "message": "Historical company deleted successfully." if action == "company_deleted" else "Historical records removed from operational company.",
+        "id": str(customer_id),
+        "action": action,
+    }

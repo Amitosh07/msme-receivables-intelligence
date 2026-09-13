@@ -437,6 +437,7 @@ function HistoricalCompanyReviewModal({
 // 2. Company Detail Workspace View
 // ----------------------------------------------------------------------
 function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
+  const navigate = useNavigate();
   const [detail, setDetail] = useState<HistoricalCompanyDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -448,7 +449,23 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
   const [showImportPaymentModal, setShowImportPaymentModal] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState<HistoricalInvoiceItem | null>(null);
   const [dueDateInvoice, setDueDateInvoice] = useState<HistoricalInvoiceItem | null>(null);
+  const [changeCompanyInvoice, setChangeCompanyInvoice] = useState<HistoricalInvoiceItem | null>(null);
   const [showGstinModal, setShowGstinModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const handleDeleteCompany = async () => {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await historicalApi.deleteCompany(companyId);
+      navigate("/historical");
+    } catch (err) {
+      setDeleteError(normaliseError(err).message);
+      setDeleting(false);
+    }
+  };
 
   const loadDetail = useCallback(async () => {
     setLoading(true);
@@ -548,6 +565,14 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
           >
             <UploadCloud size={16} /> Import payment history
           </button>
+          <button
+            className="button"
+            onClick={() => setShowDeleteModal(true)}
+            style={{ color: "#a94e2d", borderColor: "#ebcfb7" }}
+            title="Delete this company workspace"
+          >
+            <X size={16} /> Delete company
+          </button>
         </div>
       </section>
 
@@ -628,7 +653,7 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
                 {detail.invoices.map((inv) => (
                   <tr key={inv.id}>
                     <td>
-                      <strong className="invoice-link">{inv.invoice_number}</strong>
+                      <strong className="invoice-link">{inv.invoice_number || "—"}</strong>
                     </td>
                     <td>{date(inv.invoice_date)}</td>
                     <td>
@@ -638,7 +663,7 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
                         </button>
                       )}
                     </td>
-                    <td className="numeric">{inv.currency ? money(inv.amount, inv.currency) : inv.amount.toLocaleString()}</td>
+                    <td className="numeric">{money(inv.amount, inv.currency)}</td>
                     <td>
                       {inv.payment_date ? (
                         <span style={{ color: "#1d6b3a", fontWeight: 600 }}>
@@ -648,19 +673,28 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
                         <button className="text-button" onClick={() => openPaymentModalFor(inv)}>Pending · add payment</button>
                       )}
                     </td>
-                    <td className="numeric">{inv.currency ? money(inv.total_paid, inv.currency) : inv.total_paid.toLocaleString()}</td>
-                    <td className="numeric">{inv.currency ? money(inv.outstanding_balance, inv.currency) : inv.outstanding_balance.toLocaleString()}</td>
+                    <td className="numeric">{money(inv.total_paid, inv.currency)}</td>
+                    <td className="numeric">{money(inv.outstanding_balance, inv.currency)}</td>
                     <td>
-                      <StatusBadge value={inv.payment_status} />
+                      <StatusBadge value={inv.payment_status || "OPEN"} />
                     </td>
                     <td style={{ textAlign: "right" }}>
-                      <button
-                        className="text-button"
-                        onClick={() => openPaymentModalFor(inv)}
-                        title="Record payment for this invoice"
-                      >
-                        Add payment
-                      </button>
+                      <div style={{ display: "inline-flex", gap: 10, justifyContent: "flex-end" }}>
+                        <button
+                          className="text-button"
+                          onClick={() => setChangeCompanyInvoice(inv)}
+                          title="Change or correct company for this invoice"
+                        >
+                          Change company
+                        </button>
+                        <button
+                          className="text-button"
+                          onClick={() => openPaymentModalFor(inv)}
+                          title="Record payment for this invoice"
+                        >
+                          Add payment
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -731,6 +765,17 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
           }}
         />
       )}
+      {changeCompanyInvoice && (
+        <ChangeHistoricalInvoiceCompanyModal
+          invoice={changeCompanyInvoice}
+          currentCompanyName={detail.display_name}
+          onClose={() => setChangeCompanyInvoice(null)}
+          onSuccess={() => {
+            setChangeCompanyInvoice(null);
+            void loadDetail();
+          }}
+        />
+      )}
       {showGstinModal && (
         <CompanyGstinModal
           companyId={companyId}
@@ -742,7 +787,223 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
           }}
         />
       )}
+      {showDeleteModal && (
+        <DeleteHistoricalCompanyModal
+          companyName={detail.display_name}
+          onClose={() => {
+            if (!deleting) {
+              setShowDeleteModal(false);
+              setDeleteError(null);
+            }
+          }}
+          onConfirm={handleDeleteCompany}
+          deleting={deleting}
+          error={deleteError}
+        />
+      )}
     </>
+  );
+}
+
+function ChangeHistoricalInvoiceCompanyModal({
+  invoice,
+  currentCompanyName,
+  onClose,
+  onSuccess,
+}: {
+  invoice: HistoricalInvoiceItem;
+  currentCompanyName: string;
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const [companies, setCompanies] = useState<HistoricalCompanySummary[]>([]);
+  const [loadingCompanies, setLoadingCompanies] = useState(true);
+  const [selectedCompanyId, setSelectedCompanyId] = useState("");
+  const [newCompanyName, setNewCompanyName] = useState("");
+  const [gstin, setGstin] = useState("");
+  const [createIfMissing, setCreateIfMissing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    historicalApi
+      .listCompanies()
+      .then((res) => setCompanies(res))
+      .catch((err) => setError(normaliseError(err).message))
+      .finally(() => setLoadingCompanies(false));
+  }, []);
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      if (selectedCompanyId) {
+        await historicalApi.correctInvoiceCompany(invoice.id, {
+          replacement_customer_id: selectedCompanyId,
+        });
+      } else {
+        await historicalApi.correctInvoiceCompany(invoice.id, {
+          replacement_company_name: newCompanyName.trim(),
+          create_if_missing: createIfMissing,
+          gstin: gstin.trim() || undefined,
+        });
+      }
+      onSuccess();
+    } catch (err) {
+      setError(normaliseError(err).message);
+      setSaving(false);
+    }
+  };
+
+  const isNewCompany = !selectedCompanyId;
+  const isSubmitDisabled =
+    saving ||
+    loadingCompanies ||
+    (isNewCompany && (!newCompanyName.trim() || !createIfMissing));
+
+  return (
+    <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true">
+      <div className="modal-box" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 480 }}>
+        <div className="modal-header">
+          <h3>Change Company for Invoice</h3>
+          <button className="icon-button" onClick={onClose} aria-label="Close modal" disabled={saving}>
+            <X size={18} />
+          </button>
+        </div>
+        <form onSubmit={handleSubmit}>
+          <div className="modal-body">
+            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: "#485550" }}>
+              Reassign invoice <strong>{invoice.invoice_number || "without number"}</strong> ({money(invoice.amount, invoice.currency)}) from <strong>{currentCompanyName}</strong> to another company.
+            </p>
+
+            <div className="form-field">
+              <label htmlFor="select-replacement-company">Choose Existing Historical Company</label>
+              <select
+                id="select-replacement-company"
+                value={selectedCompanyId}
+                onChange={(e) => setSelectedCompanyId(e.target.value)}
+                disabled={loadingCompanies}
+              >
+                <option value="">-- Or enter a new company name below --</option>
+                {companies.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.display_name} {c.gstin ? `(${c.gstin})` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {isNewCompany && (
+              <>
+                <div className="form-field">
+                  <label htmlFor="new-replacement-company-name">New Company Name</label>
+                  <input
+                    id="new-replacement-company-name"
+                    value={newCompanyName}
+                    onChange={(e) => setNewCompanyName(e.target.value)}
+                    placeholder="e.g. Acme Corp India"
+                    required
+                  />
+                </div>
+                <div className="form-field">
+                  <label htmlFor="new-company-gstin">GSTIN (optional)</label>
+                  <input
+                    id="new-company-gstin"
+                    value={gstin}
+                    onChange={(e) => setGstin(e.target.value)}
+                    placeholder="e.g. 27AAPFU0939F1ZV"
+                    maxLength={32}
+                  />
+                </div>
+                <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "flex-start" }}>
+                  <input
+                    id="confirm-create-if-missing"
+                    type="checkbox"
+                    checked={createIfMissing}
+                    onChange={(e) => setCreateIfMissing(e.target.checked)}
+                    style={{ marginTop: 3 }}
+                  />
+                  <label htmlFor="confirm-create-if-missing" style={{ fontSize: 12, lineHeight: 1.4, color: "#485550", cursor: "pointer" }}>
+                    Confirm creating a new historical company if no existing company matches this name.
+                  </label>
+                </div>
+              </>
+            )}
+
+            {error && (
+              <div className="inline-error">
+                <AlertCircle size={16} /> {error}
+              </div>
+            )}
+          </div>
+          <div className="modal-footer">
+            <button type="button" className="button" onClick={onClose} disabled={saving}>
+              Cancel
+            </button>
+            <button type="submit" className="button primary" disabled={isSubmitDisabled}>
+              {saving ? <LoaderCircle size={16} className="spin" /> : <CheckCircle2 size={16} />}
+              Reassign company
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function DeleteHistoricalCompanyModal({
+  companyName,
+  onClose,
+  onConfirm,
+  deleting,
+  error,
+}: {
+  companyName: string;
+  onClose: () => void;
+  onConfirm: () => void;
+  deleting: boolean;
+  error: string | null;
+}) {
+  return (
+    <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true">
+      <div className="modal-box" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 480 }}>
+        <div className="modal-header">
+          <h3>Delete Historical Company</h3>
+          <button className="icon-button" onClick={onClose} aria-label="Close modal" disabled={deleting}>
+            <X size={18} />
+          </button>
+        </div>
+        <div className="modal-body">
+          <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: "#485550" }}>
+            Are you sure you want to delete <strong>{companyName}</strong> from your historical workspace?
+          </p>
+          <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: "#71807a" }}>
+            This will permanently remove historical invoices, payments, and documents associated with this company. If this company also has active operational records, its operational data will remain preserved.
+          </p>
+          {error && (
+            <div className="inline-error">
+              <AlertCircle size={16} /> {error}
+            </div>
+          )}
+        </div>
+        <div className="modal-footer">
+          <button type="button" className="button" onClick={onClose} disabled={deleting}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="button"
+            onClick={onConfirm}
+            disabled={deleting}
+            style={{ background: "#a94e2d", color: "#fff", borderColor: "#a94e2d" }}
+          >
+            {deleting ? <LoaderCircle size={16} className="spin" /> : <X size={16} />}
+            Delete company
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1032,9 +1293,12 @@ function ManualPaymentModal({
   onClose: () => void;
   onSuccess: () => void;
 }) {
-  const [selectedId, setSelectedId] = useState<string>(
-    initialInvoiceId || invoices[0]?.id || ""
-  );
+  const [selectedId, setSelectedId] = useState<string>(() => {
+    if (initialInvoiceId && invoices.some((i) => i.id === initialInvoiceId)) {
+      return initialInvoiceId;
+    }
+    return invoices[0]?.id || "";
+  });
 
   const selectedInv = useMemo(
     () => invoices.find((inv) => inv.id === selectedId),
@@ -1044,9 +1308,13 @@ function ManualPaymentModal({
   const [paymentDate, setPaymentDate] = useState<string>(
     new Date().toISOString().slice(0, 10)
   );
-  const [amount, setAmount] = useState<string>(
-    selectedInv ? String(selectedInv.outstanding_balance > 0 ? selectedInv.outstanding_balance : selectedInv.amount) : ""
-  );
+  const [amount, setAmount] = useState<string>(() => {
+    const target = invoices.find((inv) => inv.id === (initialInvoiceId || invoices[0]?.id));
+    if (!target) return "";
+    const bal = target.outstanding_balance ?? 0;
+    const amt = target.amount ?? 0;
+    return String(bal > 0 ? bal : amt);
+  });
   const [reference, setReference] = useState<string>("");
   const [note, setNote] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
@@ -1057,7 +1325,9 @@ function ManualPaymentModal({
     setSelectedId(newId);
     const target = invoices.find((inv) => inv.id === newId);
     if (target) {
-      setAmount(String(target.outstanding_balance > 0 ? target.outstanding_balance : target.amount));
+      const bal = target.outstanding_balance ?? 0;
+      const amt = target.amount ?? 0;
+      setAmount(String(bal > 0 ? bal : amt));
     }
   };
 
@@ -1105,22 +1375,28 @@ function ManualPaymentModal({
 
         <form onSubmit={handleSubmit}>
           <div className="modal-body">
-            <div className="form-field">
-              <label htmlFor="invoice-select">Target Historical Invoice</label>
-              <select
-                id="invoice-select"
-                value={selectedId}
-                onChange={(e) => onInvoiceChange(e.target.value)}
-                required
-              >
-                {invoices.map((inv) => (
-                  <option key={inv.id} value={inv.id}>
-                    Invoice #{inv.invoice_number} — Total: {money(inv.amount, inv.currency)} (Bal:{" "}
-                    {money(inv.outstanding_balance, inv.currency)}) [{inv.payment_status}]
-                  </option>
-                ))}
-              </select>
-            </div>
+            {invoices.length === 0 ? (
+              <p style={{ margin: 0, color: "#60706a" }}>
+                No historical invoices found to record payment against.
+              </p>
+            ) : (
+              <div className="form-field">
+                <label htmlFor="invoice-select">Target Historical Invoice</label>
+                <select
+                  id="invoice-select"
+                  value={selectedId}
+                  onChange={(e) => onInvoiceChange(e.target.value)}
+                  required
+                >
+                  {invoices.map((inv) => (
+                    <option key={inv.id} value={inv.id}>
+                      Invoice #{inv.invoice_number || "Unnumbered"} — Total: {money(inv.amount, inv.currency)} (Bal:{" "}
+                      {money(inv.outstanding_balance, inv.currency)}) [{inv.payment_status || "OPEN"}]
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             <div className="form-field">
               <label htmlFor="payment-date">Factual Payment Date</label>
@@ -1184,7 +1460,7 @@ function ManualPaymentModal({
             <button
               type="submit"
               className="button primary"
-              disabled={submitting}
+              disabled={submitting || !selectedId || invoices.length === 0}
             >
               {submitting ? (
                 <>

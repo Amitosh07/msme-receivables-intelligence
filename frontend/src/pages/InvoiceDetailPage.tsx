@@ -89,7 +89,7 @@ export function InvoiceDetailPage() {
     <section className="detail-head">
       <div>
         <p className="eyebrow">Invoice</p>
-        <h2>{invoice.invoice_number}</h2>
+        <h2>{invoice.invoice_number || "—"}</h2>
         <p>Created {date(invoice.created_at.slice(0, 10))}</p>
       </div>
       <div className="detail-value">
@@ -107,7 +107,7 @@ export function InvoiceDetailPage() {
           <Fact label="Payment terms" value={invoice.payment_terms || "Not available"} />
           <Fact label="Payment status" value={<StatusBadge value={invoice.payment_status} />} />
           <Fact label="Processing" value={<StatusBadge value={invoice.processing_status} />} />
-          <Fact label="Currency" value={invoice.currency} />
+          <Fact label="Currency" value={invoice.currency || "INR"} />
         </dl>
 
         {/* Payment balance summary */}
@@ -264,7 +264,7 @@ function ProofUploadPanel({
   onCancel,
 }: {
   invoiceId: string;
-  currency: string;
+  currency?: string | null;
   onVerified: () => Promise<void>;
   onCancel: () => void;
 }) {
@@ -479,7 +479,7 @@ function PaymentForm({
   invoiceId: string;
   invoiceAmount: number;
   outstandingBalance: number;
-  currency: string;
+  currency?: string | null;
   onSuccess: () => void;
   onCancel: () => void;
 }) {
@@ -573,7 +573,7 @@ function PaymentForm({
   );
 }
 
-function PaymentRow({ payment, currency }: { payment: PaymentRecord; currency: string }) {
+function PaymentRow({ payment, currency }: { payment: PaymentRecord; currency?: string | null }) {
   const provenanceLabel = payment.provenance === "proof_verified"
     ? "Proof verified"
     : payment.provenance === "manual"
@@ -605,7 +605,7 @@ function PaymentRow({ payment, currency }: { payment: PaymentRecord; currency: s
   );
 }
 
-function ProofRow({ proof }: { proof: PaymentProof; currency: string }) {
+function ProofRow({ proof }: { proof: PaymentProof; currency?: string | null }) {
   const isDoc = proof.original_filename.toLowerCase().endsWith(".pdf");
   const Icon = isDoc ? FileText : FileSpreadsheet;
 
