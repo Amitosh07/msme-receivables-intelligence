@@ -13,6 +13,7 @@ import uuid
 
 from fastapi import HTTPException, status
 from sqlalchemy import String, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.app.models.customer import Customer
@@ -25,7 +26,48 @@ from backend.app.schemas.historical import (
     HistoricalCompanySummary,
     HistoricalInvoiceItem,
 )
-from backend.app.services.customer_identity import normalize_customer_name
+from backend.app.services.customer_identity import create_customer, normalize_customer_name
+
+
+def create_historical_company(
+    db: Session,
+    business_id: uuid.UUID,
+    display_name: str,
+    gstin: Optional[str] = None,
+) -> HistoricalCompanySummary:
+    """Create one explicit historical workspace, rejecting normalized duplicates."""
+    normalized_name = normalize_customer_name(display_name)
+    if not normalized_name:
+        raise ValueError("Company name is required.")
+    existing = db.scalar(
+        select(Customer).where(
+            Customer.business_id == business_id,
+            Customer.normalized_name == normalized_name,
+        )
+    )
+    if existing is not None:
+        raise FileExistsError("A company with this name already exists.")
+
+    customer = create_customer(
+        db,
+        business_id=business_id,
+        display_name=display_name,
+        gstin=gstin,
+    )
+    customer.has_historical_context = True
+    try:
+        db.commit()
+        db.refresh(customer)
+    except IntegrityError as exc:
+        db.rollback()
+        raise FileExistsError("A company with this name or GSTIN already exists.") from exc
+    return HistoricalCompanySummary(
+        id=customer.id,
+        display_name=customer.display_name,
+        normalized_name=customer.normalized_name,
+        gstin=customer.gstin,
+        customer_ref=customer.customer_ref,
+    )
 from backend.app.services.invoice_service import upload_invoice_document
 from backend.app.services.manual_payment_service import (
     derive_invoice_payment_status,
@@ -73,7 +115,7 @@ def list_historical_companies(
 
     query = select(Customer).where(
         Customer.business_id == business_id,
-        Customer.id.in_(eligible_subq),
+        (Customer.has_historical_context.is_(True)) | Customer.id.in_(eligible_subq),
     )
 
     if search and search.strip():
@@ -122,7 +164,10 @@ def list_historical_companies(
         total_paid = sum(float(p.amount) for p in payments)
         outstanding = max(0.0, total_amount - total_paid)
 
-        last_inv_date = max((inv.invoice_date for inv in invoices), default=None)
+        last_inv_date = max(
+            (inv.invoice_date for inv in invoices if inv.invoice_date is not None),
+            default=None,
+        )
         last_pmt_date = max(
             (
                 p.payment_date.date() if isinstance(p.payment_date, datetime) else p.payment_date
@@ -168,6 +213,16 @@ def get_historical_company_detail(
     if customer is None:
         return None
 
+    has_historical_invoice = db.scalar(
+        select(Invoice.id).where(
+            Invoice.business_id == business_id,
+            Invoice.customer_id == customer_id,
+            Invoice.origin == InvoiceOrigin.HISTORICAL.value,
+        ).limit(1)
+    ) is not None
+    if not customer.has_historical_context and not has_historical_invoice:
+        return None
+
     invoices = list(
         db.scalars(
             select(Invoice)
@@ -211,6 +266,7 @@ def get_historical_company_detail(
                 currency=inv.currency,
                 origin=inv.origin,
                 payment_status=actual_status,
+                processing_status=inv.processing_status,
                 total_paid=float(total_paid_dec),
                 outstanding_balance=float(outstanding_dec),
                 payment_date=latest_payment_date,
@@ -311,3 +367,98 @@ def upload_historical_company_invoice(
         )
 
     return doc, task
+
+
+def upload_unassigned_historical_invoice(
+    db: Session,
+    business_id: uuid.UUID,
+    file_content: bytes,
+    original_filename: str,
+) -> tuple[InvoiceDocument, Task]:
+    """Upload a historical PDF and let reliable parser identity drive association."""
+    doc = upload_invoice_document(
+        db=db,
+        business_id=business_id,
+        file_content=file_content,
+        original_filename=original_filename,
+        origin=InvoiceOrigin.HISTORICAL.value,
+        commit=False,
+    )
+    payload = {
+        "invoice_document_id": str(doc.id),
+        "business_id": str(business_id),
+        "origin": InvoiceOrigin.HISTORICAL.value,
+    }
+    task = create_task(
+        db=db, business_id=business_id, task_type="parse_invoice", payload=payload, commit=False
+    )
+    db.commit()
+    db.refresh(doc)
+    db.refresh(task)
+    try:
+        get_task_queue().enqueue(
+            task_id=task.id,
+            task_type="parse_invoice",
+            business_id=business_id,
+            payload=payload,
+        )
+    except Exception as exc:
+        logger.warning("Could not immediately enqueue task %s to Redis: %s", task.id, exc)
+    return doc, task
+
+
+def complete_historical_invoice_review(
+    db: Session,
+    business_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+    *,
+    customer_id: Optional[uuid.UUID] = None,
+    company_name: Optional[str] = None,
+    gstin: Optional[str] = None,
+    due_date: Optional[date] = None,
+) -> Invoice:
+    invoice = db.scalar(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            Invoice.business_id == business_id,
+            Invoice.origin == InvoiceOrigin.HISTORICAL.value,
+        )
+    )
+    if invoice is None:
+        raise LookupError("Historical invoice not found.")
+    if customer_id:
+        customer = db.scalar(
+            select(Customer).where(
+                Customer.id == customer_id, Customer.business_id == business_id
+            )
+        )
+        if customer is None:
+            raise LookupError("Company not found.")
+    elif company_name:
+        customer = create_customer(
+            db, business_id=business_id, display_name=company_name, gstin=gstin
+        )
+    else:
+        customer = invoice.customer
+    if customer:
+        customer.has_historical_context = True
+        invoice.customer_id = customer.id
+        invoice.unresolved_customer_name = None
+    if due_date:
+        invoice.due_date = due_date
+    invoice.processing_status = (
+        "PROCESSED" if invoice.customer_id and invoice.due_date else "NEEDS_REVIEW"
+    )
+    if invoice.document:
+        invoice.document.processing_status = invoice.processing_status
+        needs = []
+        if not invoice.customer_id:
+            needs.append("company selection")
+        if not invoice.due_date:
+            needs.append("due date")
+        invoice.document.error_message = (
+            "Manual review required: " + " and ".join(needs) + "." if needs else None
+        )
+    db.commit()
+    db.refresh(invoice)
+    return invoice

@@ -595,6 +595,50 @@ class TestInvoiceParser(unittest.TestCase):
         self.assertEqual(result.error_code, "REQUIRED_FIELDS_MISSING")
         self.assertIn("due date", result.error.lower())
 
+    def test_historical_amount_without_currency_or_due_date_succeeds_for_review(self):
+        text = (
+            "TAX INVOICE\nInvoice #: HIST-REVIEW-01\n"
+            "Customer: Orchard Components\nInvoice Date: 2026-03-01\n"
+            "Grand Total: 1,25,450.75\n"
+        )
+        result = InvoiceParser.parse(_make_pdf(text), historical=True)
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.invoice.amount, 125450.75)
+        self.assertIsNone(result.invoice.currency)
+        self.assertIsNone(result.invoice.due_date)
+        self.assertIsNone(result.invoice.customer_gstin)
+
+    def test_historical_western_grouping_and_derived_due_date(self):
+        text = (
+            "INVOICE\nDocument Number: HIST-WEST-02\nBill To: Orchard Components\n"
+            "Issue Date: 2026-04-10\nTerms of Payment: Net 30\n"
+            "Amount Due: 125,450.75\n"
+        )
+        result = InvoiceParser.parse(_make_pdf(text), historical=True)
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.invoice.amount, 125450.75)
+        self.assertEqual(result.invoice.due_date, date(2026, 5, 10))
+
+    def test_historical_missing_company_does_not_invent_one(self):
+        text = (
+            "TAX INVOICE\nInvoice #: HIST-NOCOMPANY-03\n"
+            "Invoice Date: 2026-03-01\nDue Date: 2026-03-31\n"
+            "Total Amount: 42,500.00\n"
+        )
+        result = InvoiceParser.parse(_make_pdf(text), historical=True)
+        self.assertTrue(result.success, result.error)
+        self.assertIsNone(result.invoice.customer_name)
+
+    def test_historical_unreliable_amount_still_fails(self):
+        text = (
+            "TAX INVOICE\nInvoice #: HIST-NOAMOUNT-04\n"
+            "Customer: Orchard Components\nInvoice Date: 2026-03-01\n"
+            "Due Date: 2026-03-31\nThank you for your business.\n"
+        )
+        result = InvoiceParser.parse(_make_pdf(text), historical=True)
+        self.assertFalse(result.success)
+        self.assertIn("invoice total", result.error.lower())
+
     def test_ocr_based_invoice_extraction(self):
         """
         Verify OCR tier handles scanned/raster documents when OCR is available.

@@ -25,9 +25,9 @@ class TransientParserError(ParserError):
 @dataclass
 class ExtractedInvoice:
     """Structured representation of extracted invoice data."""
-    invoice_number: str
-    invoice_date: date
-    due_date: date
+    invoice_number: Optional[str]
+    invoice_date: Optional[date]
+    due_date: Optional[date]
     amount: float
     currency: Optional[str] = None
     customer_name: Optional[str] = None

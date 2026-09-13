@@ -156,6 +156,20 @@ def create_customer(
     if gstin and normalize_gstin(gstin) is None:
         raise ValueError("GSTIN structure or checksum is invalid.")
 
+    same_name = db.scalar(
+        select(Customer).where(
+            Customer.business_id == business_id,
+            Customer.normalized_name == normalized_name,
+        )
+    )
+    if same_name is not None:
+        supplied_gstin = normalize_gstin(gstin)
+        if supplied_gstin and same_name.normalized_gstin and supplied_gstin != same_name.normalized_gstin:
+            raise ValueError("Company name already exists with a different GSTIN.")
+        if supplied_gstin and not same_name.normalized_gstin:
+            same_name.gstin = gstin.strip() if gstin else supplied_gstin
+        return same_name
+
     existing = resolve_customer_identity(
         db,
         business_id=business_id,

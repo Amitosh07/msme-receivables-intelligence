@@ -79,26 +79,26 @@ class Invoice(Base, TimestampMixin):
         String(255),
         nullable=True,
     )
-    invoice_number: Mapped[str] = mapped_column(
+    invoice_number: Mapped[str | None] = mapped_column(
         String(64),
-        nullable=False,
+        nullable=True,
         index=True,
     )
-    invoice_date: Mapped[date] = mapped_column(
+    invoice_date: Mapped[date | None] = mapped_column(
         Date,
-        nullable=False,
+        nullable=True,
     )
-    due_date: Mapped[date] = mapped_column(
+    due_date: Mapped[date | None] = mapped_column(
         Date,
-        nullable=False,
+        nullable=True,
     )
     amount: Mapped[float] = mapped_column(
         Numeric(14, 2),
         nullable=False,
     )
-    currency: Mapped[str] = mapped_column(
+    currency: Mapped[str | None] = mapped_column(
         String(3),
-        nullable=False,
+        nullable=True,
         default="USD",
     )
     payment_terms: Mapped[str | None] = mapped_column(

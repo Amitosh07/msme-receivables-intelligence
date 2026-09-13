@@ -20,6 +20,7 @@ from decimal import Decimal
 import io
 import unittest
 import uuid
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
@@ -37,6 +38,9 @@ from backend.app.models.task import Task
 from backend.app.models.user import User
 from backend.app.services.customer_identity import create_customer
 from backend.app.services.storage import get_storage
+from backend.app.services.historical_service import upload_unassigned_historical_invoice
+from backend.app.services.parser.base import ExtractedInvoice, ExtractionResult
+from backend.app.workers.handlers import handle_parse_invoice
 
 
 def _create_minimal_pdf() -> bytes:
@@ -109,6 +113,155 @@ class TestHistoricalWorkspace(unittest.TestCase):
             self.db.rollback()
         finally:
             self.db.close()
+
+    def test_new_tenant_has_empty_historical_workspace(self):
+        response = self.client.get(
+            "/historical/companies",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [])
+
+    def test_create_historical_company_with_optional_gstin_and_reject_duplicates(self):
+        headers = {"Authorization": f"Bearer {self.token_a}"}
+        created = self.client.post(
+            "/historical/companies",
+            json={"display_name": "Apex Manufacturing Pvt Ltd"},
+            headers=headers,
+        )
+        self.assertEqual(created.status_code, 201)
+        self.assertIsNone(created.json()["gstin"])
+        self.assertEqual(created.json()["historical_invoice_count"], 0)
+
+        duplicate = self.client.post(
+            "/historical/companies",
+            json={"display_name": "apex manufacturing private limited"},
+            headers=headers,
+        )
+        self.assertEqual(duplicate.status_code, 409)
+
+        listed = self.client.get("/historical/companies", headers=headers)
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(len(listed.json()), 1)
+        self.assertEqual(listed.json()[0]["id"], created.json()["id"])
+
+        other_tenant = self.client.get(
+            "/historical/companies",
+            headers={"Authorization": f"Bearer {self.token_b}"},
+        )
+        self.assertEqual(other_tenant.status_code, 200)
+        self.assertEqual(other_tenant.json(), [])
+
+    def test_historical_payment_endpoint_rejects_current_invoice(self):
+        customer = create_customer(
+            self.db,
+            business_id=self.business_a_id,
+            display_name="Current Only Buyer",
+        )
+        invoice = Invoice(
+            business_id=self.business_a_id,
+            customer_id=customer.id,
+            invoice_number=f"CURRENT-{uuid.uuid4().hex[:8]}",
+            invoice_date=date(2026, 9, 1),
+            due_date=date(2026, 9, 30),
+            amount=1000,
+            currency="INR",
+            origin=InvoiceOrigin.CURRENT.value,
+        )
+        self.db.add(invoice)
+        self.db.commit()
+        response = self.client.post(
+            f"/historical/invoices/{invoice.id}/payments",
+            json={"payment_date": "2026-09-10", "amount": 1000},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_historical_worker_auto_discovers_company_case_insensitively(self):
+        existing = create_customer(
+            self.db, business_id=self.business_a_id, display_name="Orchard Components Pvt Ltd"
+        )
+        self.db.commit()
+        doc, task = upload_unassigned_historical_invoice(
+            self.db, self.business_a_id, _create_minimal_pdf(), "auto-company.pdf"
+        )
+        self.uploaded_keys.append(doc.storage_key)
+        extracted = ExtractedInvoice(
+            invoice_number="HIST-AUTO-COMPANY",
+            invoice_date=date(2026, 1, 1),
+            due_date=date(2026, 1, 31),
+            amount=Decimal("2500.00"),
+            currency=None,
+            customer_name="orchard components private limited",
+        )
+        with patch(
+            "backend.app.workers.handlers.InvoiceParser.parse",
+            return_value=ExtractionResult(True, invoice=extracted),
+        ):
+            handle_parse_invoice(self.db, task, task.payload)
+        invoice = self.db.get(Invoice, task.invoice_id)
+        self.assertEqual(invoice.customer_id, existing.id)
+        self.assertEqual(invoice.origin, InvoiceOrigin.HISTORICAL.value)
+        self.assertIsNone(invoice.currency)
+        count = self.db.scalar(
+            select(func.count(Customer.id)).where(
+                Customer.business_id == self.business_a_id,
+                Customer.normalized_name == existing.normalized_name,
+            )
+        )
+        self.assertEqual(count, 1)
+
+    def test_historical_worker_missing_company_and_due_date_enters_review(self):
+        before = self.db.scalar(
+            select(func.count(Customer.id)).where(Customer.business_id == self.business_a_id)
+        )
+        doc, task = upload_unassigned_historical_invoice(
+            self.db, self.business_a_id, _create_minimal_pdf(), "needs-review.pdf"
+        )
+        self.uploaded_keys.append(doc.storage_key)
+        extracted = ExtractedInvoice(
+            invoice_number="HIST-NEEDS-REVIEW",
+            invoice_date=date(2026, 2, 1),
+            due_date=None,
+            amount=Decimal("3750.00"),
+            currency=None,
+            customer_name=None,
+        )
+        with patch(
+            "backend.app.workers.handlers.InvoiceParser.parse",
+            return_value=ExtractionResult(True, invoice=extracted),
+        ):
+            handle_parse_invoice(self.db, task, task.payload)
+        invoice = self.db.get(Invoice, task.invoice_id)
+        self.assertEqual(invoice.processing_status, "NEEDS_REVIEW")
+        self.assertIsNone(invoice.customer_id)
+        self.assertIsNone(invoice.due_date)
+        self.assertEqual(invoice.document.processing_status, "NEEDS_REVIEW")
+        self.assertIn("company selection", invoice.document.error_message)
+        self.assertIn("due date", invoice.document.error_message)
+        after = self.db.scalar(
+            select(func.count(Customer.id)).where(Customer.business_id == self.business_a_id)
+        )
+        self.assertEqual(after, before)
+
+        headers = {"Authorization": f"Bearer {self.token_a}"}
+        reviews = self.client.get("/historical/invoices/review", headers=headers)
+        self.assertEqual(reviews.status_code, 200)
+        self.assertIn(str(invoice.id), {item["id"] for item in reviews.json()})
+        completed = self.client.patch(
+            f"/historical/invoices/{invoice.id}/review",
+            json={
+                "company_name": "Review Selected Company",
+                "due_date": "2026-03-15",
+            },
+            headers=headers,
+        )
+        self.assertEqual(completed.status_code, 200)
+        self.assertEqual(completed.json()["processing_status"], "PROCESSED")
+        self.db.expire_all()
+        reviewed_invoice = self.db.get(Invoice, invoice.id)
+        self.assertIsNotNone(reviewed_invoice.customer_id)
+        self.assertEqual(reviewed_invoice.due_date, date(2026, 3, 15))
 
     def test_historical_company_listing_and_search(self):
         """Historical company listing returns only companies with historical data, supporting search."""

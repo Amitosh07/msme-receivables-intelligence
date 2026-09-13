@@ -141,20 +141,20 @@ class TestCustomerIdentity(unittest.TestCase):
         self.assertEqual(match.matched_by, "customer_ref")
         self.assertNotEqual(match.customer.id, false_gstin_target.id)
 
-    def test_different_gstins_do_not_merge_even_with_same_name(self) -> None:
+    def test_same_normalized_name_rejects_conflicting_gstin(self) -> None:
         first = create_customer(
             self.db,
             business_id=self.business_a.id,
             display_name="Twin Trading Pvt Ltd",
             gstin=VALID_GSTIN_A,
         )
-        second = create_customer(
-            self.db,
-            business_id=self.business_a.id,
-            display_name="Twin Trading Private Limited",
-            gstin=VALID_GSTIN_B,
-        )
-        self.assertNotEqual(first.id, second.id)
+        with self.assertRaisesRegex(ValueError, "different GSTIN"):
+            create_customer(
+                self.db,
+                business_id=self.business_a.id,
+                display_name="Twin Trading Private Limited",
+                gstin=VALID_GSTIN_B,
+            )
 
     def test_exact_normalized_name_matches_without_gstin(self) -> None:
         customer = create_customer(

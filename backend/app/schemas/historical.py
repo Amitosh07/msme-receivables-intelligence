@@ -8,7 +8,21 @@ from datetime import date
 from typing import List, Optional
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class HistoricalCompanyCreate(BaseModel):
+    """Explicit creation request for a tenant-owned historical company."""
+    display_name: str = Field(min_length=1, max_length=255)
+    gstin: Optional[str] = Field(default=None, max_length=32)
+
+
+class HistoricalInvoiceReview(BaseModel):
+    """Manual completion of fields the historical parser could not establish."""
+    customer_id: Optional[uuid.UUID] = None
+    company_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    gstin: Optional[str] = Field(default=None, max_length=32)
+    due_date: Optional[date] = None
 
 
 class HistoricalCompanySummary(BaseModel):
@@ -31,13 +45,14 @@ class HistoricalCompanySummary(BaseModel):
 class HistoricalInvoiceItem(BaseModel):
     """Historical invoice item detail with factual payment attributes."""
     id: uuid.UUID
-    invoice_number: str
-    invoice_date: date
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[date] = None
     due_date: Optional[date] = None
     amount: float
-    currency: str = "INR"
+    currency: Optional[str] = None
     origin: str = "HISTORICAL"
     payment_status: str  # factual status: OPEN, PARTIAL, PAID
+    processing_status: str = "PROCESSED"
     total_paid: float = 0.0
     outstanding_balance: float = 0.0
     payment_date: Optional[date] = None  # factual payment date if payments exist

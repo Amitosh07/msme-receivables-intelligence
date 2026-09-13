@@ -45,11 +45,11 @@ class InvoiceResponse(BaseModel):
     business_id: uuid.UUID
     customer_id: Optional[uuid.UUID] = None
     unresolved_customer_name: Optional[str] = None
-    invoice_number: str
-    invoice_date: date
-    due_date: date
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[date] = None
+    due_date: Optional[date] = None
     amount: float
-    currency: str
+    currency: Optional[str] = None
     payment_terms: Optional[str] = None
     payment_status: str
     processing_status: str

@@ -58,7 +58,7 @@ class InvoiceParser:
     MIN_TEXT_CHARS = 30
 
     @classmethod
-    def parse(cls, pdf_bytes: bytes) -> ExtractionResult:
+    def parse(cls, pdf_bytes: bytes, *, historical: bool = False) -> ExtractionResult:
         if not pdf_bytes:
             return ExtractionResult(False, error="The uploaded PDF is empty.", error_code="EMPTY_PDF")
         if b"%PDF" not in pdf_bytes[:1024]:
@@ -76,7 +76,7 @@ class InvoiceParser:
         successful: list[ExtractedInvoice] = []
         missing_by_method: list[tuple[str, list[str]]] = []
         for method, text in attempts:
-            invoice, missing = cls._extract_fields(text, method)
+            invoice, missing = cls._extract_fields(text, method, historical=historical)
             if invoice:
                 successful.append(invoice)
             else:
@@ -90,7 +90,7 @@ class InvoiceParser:
         if available:
             ocr_text = normalize_invoice_text(extract_text_via_ocr(pdf_bytes), ocr=True)
             if ocr_text:
-                invoice, missing = cls._extract_fields(ocr_text, "ocr")
+                invoice, missing = cls._extract_fields(ocr_text, "ocr", historical=historical)
                 if invoice:
                     return ExtractionResult(True, invoice=invoice, method="ocr")
                 missing_by_method.append(("ocr", missing))
@@ -126,7 +126,9 @@ class InvoiceParser:
         )
 
     @classmethod
-    def _extract_fields(cls, text: str, method: str) -> tuple[Optional[ExtractedInvoice], list[str]]:
+    def _extract_fields(
+        cls, text: str, method: str, *, historical: bool = False
+    ) -> tuple[Optional[ExtractedInvoice], list[str]]:
         number = cls._extract_invoice_number(text)
         invoice_date = cls._extract_labeled_date(
             text, ("invoice date", "date of invoice", "issue date", "date of issue", "bill date", "document date", "inv date", "date"),
@@ -154,13 +156,13 @@ class InvoiceParser:
             if customer_name and customer_confidence >= 0.6
             else None
         )
-        required = {
+        required = ({"invoice total": amount} if historical else {
             "invoice number": number,
             "customer name": customer_candidate,
             "invoice date": invoice_date,
             "due date or usable payment terms": due_date,
             "invoice total": amount,
-        }
+        })
         missing = [name for name, value in required.items() if value is None]
         if missing:
             return None, missing
@@ -171,17 +173,22 @@ class InvoiceParser:
         po_number = cls._extract_po_number(text)
 
         field_confidence = {
-            "invoice_number": number.score,
+            "invoice_number": number.score if number else 0.0,
             "customer_name": customer_confidence,
-            "invoice_date": invoice_date.score,
-            "due_date": due_date.score,
+            "invoice_date": invoice_date.score if invoice_date else 0.0,
+            "due_date": due_date.score if due_date else 0.0,
             "amount": amount.score,
             "payment_terms": terms_confidence,
         }
         if currency:
             field_confidence["currency"] = currency.score
 
-        score_components = [number.score, customer_confidence, invoice_date.score, due_date.score, amount.score]
+        score_components = [amount.score]
+        score_components.extend(
+            candidate.score for candidate in (number, invoice_date, due_date) if candidate
+        )
+        if customer_candidate:
+            score_components.append(customer_confidence)
         if currency:
             score_components.append(currency.score)
         confidence = sum(score_components) / len(score_components)
@@ -189,9 +196,9 @@ class InvoiceParser:
             confidence *= 0.85
 
         return ExtractedInvoice(
-            invoice_number=str(number.value),
-            invoice_date=invoice_date.value,
-            due_date=due_date.value,
+            invoice_number=str(number.value) if number else None,
+            invoice_date=invoice_date.value if invoice_date else None,
+            due_date=due_date.value if due_date else None,
             amount=float(amount.value),
             currency=str(currency.value) if currency else None,
             customer_name=customer_name,

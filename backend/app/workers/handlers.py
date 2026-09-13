@@ -5,10 +5,10 @@ Worker task handlers for asynchronous background processing.
 import logging
 import uuid
 from typing import Any, Dict
-from sqlalchemy import select, update
+from sqlalchemy import null, select, update
 from sqlalchemy.orm import Session
 
-from backend.app.models.invoice import Invoice
+from backend.app.models.invoice import Invoice, InvoiceOrigin
 from backend.app.models.invoice_document import InvoiceDocument
 from backend.app.models.payment import Payment
 from backend.app.models.task import Task
@@ -17,7 +17,11 @@ from backend.app.services.parser import (
     PermanentParserError,
     TransientParserError,
 )
-from backend.app.services.customer_identity import resolve_customer_identity
+from backend.app.services.customer_identity import (
+    CustomerIdentityResult,
+    resolve_customer_identity,
+    resolve_or_create_historical_customer,
+)
 from backend.app.services.storage import StorageError, StorageFileNotFoundError, get_storage
 
 logger = logging.getLogger(__name__)
@@ -100,7 +104,8 @@ def handle_parse_invoice(
             raise TransientParserError(f"Temporary storage error reading {doc.storage_key}: {e}") from e
 
         # 5. Execute Invoice Parser
-        result = InvoiceParser.parse(pdf_bytes)
+        is_historical = doc.origin == InvoiceOrigin.HISTORICAL.value
+        result = InvoiceParser.parse(pdf_bytes, historical=is_historical)
         if not result.success or not result.invoice:
             error_msg = result.error or "Invoice could not be parsed: required invoice fields were not found."
             doc.processing_status = "ERROR"
@@ -120,12 +125,14 @@ def handle_parse_invoice(
 
     # 6. Locate the natural invoice key before identity resolution so an
     # already-confirmed customer_id remains the strongest evidence on retries.
-    existing_inv = db.scalar(
-        select(Invoice).where(
-            Invoice.business_id == task.business_id,
-            Invoice.invoice_number == extracted.invoice_number,
+    existing_inv = None
+    if extracted.invoice_number:
+        existing_inv = db.scalar(
+            select(Invoice).where(
+                Invoice.business_id == task.business_id,
+                Invoice.invoice_number == extracted.invoice_number,
+            )
         )
-    )
 
     payload_customer_id = None
     if payload.get("customer_id"):
@@ -134,14 +141,24 @@ def handle_parse_invoice(
         except ValueError:
             payload_customer_id = None
 
-    identity = resolve_customer_identity(
-        db,
+    identity_args = dict(
         business_id=task.business_id,
         customer_id=existing_inv.customer_id if existing_inv else payload_customer_id,
         gstin=extracted.customer_gstin,
         customer_ref=extracted.customer_ref,
         display_name=extracted.customer_name,
     )
+    if is_historical and extracted.customer_name and payload_customer_id is None:
+        try:
+            identity = resolve_or_create_historical_customer(db, **identity_args)
+        except ValueError:
+            # Conflicting or ambiguous extracted identity requires human choice;
+            # it must not turn an otherwise usable historical invoice into ERROR.
+            identity = CustomerIdentityResult(None)
+        if identity.customer:
+            identity.customer.has_historical_context = True
+    else:
+        identity = resolve_customer_identity(db, **identity_args)
     customer = identity.customer
     unresolved_customer_name = None if customer else extracted.customer_name
 
@@ -156,9 +173,11 @@ def handle_parse_invoice(
         invoice.invoice_date = extracted.invoice_date
         invoice.due_date = extracted.due_date
         invoice.amount = extracted.amount
-        invoice.currency = extracted.currency or "INR"
+        invoice.currency = extracted.currency if is_historical else (extracted.currency or "INR")
         invoice.payment_terms = extracted.payment_terms
-        invoice.processing_status = "PROCESSED"
+        invoice.processing_status = (
+            "NEEDS_REVIEW" if is_historical and (not customer or not extracted.due_date) else "PROCESSED"
+        )
         if invoice.document_id is None:
             invoice.document_id = doc.id
         logger.info(
@@ -176,10 +195,15 @@ def handle_parse_invoice(
             invoice_date=extracted.invoice_date,
             due_date=extracted.due_date,
             amount=extracted.amount,
-            currency=extracted.currency or "INR",
+            currency=(
+                extracted.currency if extracted.currency
+                else (null() if is_historical else "INR")
+            ),
             payment_terms=extracted.payment_terms,
             payment_status="OPEN",
-            processing_status="PROCESSED",
+            processing_status=(
+                "NEEDS_REVIEW" if is_historical and (not customer or not extracted.due_date) else "PROCESSED"
+            ),
             origin=origin_val,
             document_id=doc.id,
         )
@@ -187,15 +211,17 @@ def handle_parse_invoice(
         db.flush()
 
     # 8. Reconcile with historical payments
-    unmatched_payments = list(
-        db.scalars(
-            select(Payment).where(
-                Payment.business_id == task.business_id,
-                Payment.invoice_reference == extracted.invoice_number,
-                Payment.invoice_id.is_(None),
-            )
-        ).all()
-    )
+    unmatched_payments = []
+    if extracted.invoice_number:
+        unmatched_payments = list(
+            db.scalars(
+                select(Payment).where(
+                    Payment.business_id == task.business_id,
+                    Payment.invoice_reference == extracted.invoice_number,
+                    Payment.invoice_id.is_(None),
+                )
+            ).all()
+        )
     if unmatched_payments:
         for p in unmatched_payments:
             p.invoice_id = invoice.id
@@ -207,8 +233,16 @@ def handle_parse_invoice(
 
     # 9. Update InvoiceDocument and Task linkages
     doc.invoice_id = invoice.id
-    doc.processing_status = "PROCESSED"
-    doc.error_message = None
+    doc.processing_status = invoice.processing_status
+    review_needs = []
+    if is_historical and not customer:
+        review_needs.append("company selection")
+    if is_historical and not extracted.due_date:
+        review_needs.append("due date")
+    doc.error_message = (
+        "Manual review required: " + " and ".join(review_needs) + "."
+        if review_needs else None
+    )
     task.invoice_id = invoice.id
     db.commit()
     db.refresh(task)

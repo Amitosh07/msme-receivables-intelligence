@@ -20,6 +20,7 @@ import type {
   HistoricalCompanyDetail,
   HistoricalCompanySummary,
   HistoricalInvoiceItem,
+  HistoricalReviewInvoice,
   PaymentImport,
 } from "../lib/types";
 
@@ -42,6 +43,10 @@ function HistoricalCompanyListView() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showCreateCompanyModal, setShowCreateCompanyModal] = useState(false);
+  const [showUploadInvoiceModal, setShowUploadInvoiceModal] = useState(false);
+  const [reviews, setReviews] = useState<HistoricalReviewInvoice[]>([]);
+  const [selectedReview, setSelectedReview] = useState<HistoricalReviewInvoice | null>(null);
   const navigate = useNavigate();
 
   // Debounce search query
@@ -56,8 +61,12 @@ function HistoricalCompanyListView() {
     setLoading(true);
     setError(null);
     try {
-      const data = await historicalApi.listCompanies(query || undefined);
+      const [data, reviewData] = await Promise.all([
+        historicalApi.listCompanies(query || undefined),
+        historicalApi.listReviews(),
+      ]);
       setCompanies(data);
+      setReviews(reviewData);
     } catch (err) {
       setError(normaliseError(err).message);
     } finally {
@@ -89,6 +98,14 @@ function HistoricalCompanyListView() {
             and machine learning training context without affecting current receivables aging.
           </p>
         </div>
+        <div className="workspace-actions">
+          <button className="button" onClick={() => setShowUploadInvoiceModal(true)}>
+            <UploadCloud size={16} /> Upload historical invoice
+          </button>
+          <button className="button primary" onClick={() => setShowCreateCompanyModal(true)}>
+            <Plus size={16} /> Add company
+          </button>
+        </div>
       </section>
 
       {/* Metric Cards */}
@@ -118,6 +135,23 @@ function HistoricalCompanyListView() {
           <small>Recorded historical payments</small>
         </div>
       </div>
+
+      {reviews.length > 0 && (
+        <div className="panel" style={{ marginBottom: 20 }}>
+          <div className="panel-heading">
+            <div>
+              <h2>Invoices needing review</h2>
+              <p>Select a company and enter any missing due date. No company identity is guessed.</p>
+            </div>
+          </div>
+          {reviews.map((invoice) => (
+            <div key={invoice.id} className="historical-search-row">
+              <span>{invoice.invoice_number || "Invoice number not extracted"} · {invoice.currency ? money(invoice.amount, invoice.currency) : invoice.amount.toLocaleString()}</span>
+              <button className="button" onClick={() => setSelectedReview(invoice)}>Complete review</button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Search & Filter Controls */}
       <div className="historical-search-row">
@@ -240,7 +274,163 @@ function HistoricalCompanyListView() {
           ))}
         </div>
       )}
+      {showCreateCompanyModal && (
+        <CreateHistoricalCompanyModal
+          onClose={() => setShowCreateCompanyModal(false)}
+          onSuccess={(company) => {
+            setShowCreateCompanyModal(false);
+            navigate(`/historical/${company.id}`);
+          }}
+        />
+      )}
+      {showUploadInvoiceModal && (
+        <UploadHistoricalInvoiceModal
+          onClose={() => setShowUploadInvoiceModal(false)}
+          onSuccess={() => {
+            setShowUploadInvoiceModal(false);
+            void loadCompanies("");
+          }}
+        />
+      )}
+      {selectedReview && (
+        <HistoricalCompanyReviewModal
+          invoice={selectedReview}
+          companies={companies}
+          onClose={() => setSelectedReview(null)}
+          onSuccess={() => {
+            setSelectedReview(null);
+            void loadCompanies(debouncedSearch);
+          }}
+        />
+      )}
     </>
+  );
+}
+
+function CreateHistoricalCompanyModal({
+  onClose,
+  onSuccess,
+}: {
+  onClose: () => void;
+  onSuccess: (company: HistoricalCompanySummary) => void;
+}) {
+  const [displayName, setDisplayName] = useState("");
+  const [gstin, setGstin] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      const company = await historicalApi.createCompany({
+        display_name: displayName.trim(),
+        gstin: gstin.trim() || null,
+      });
+      onSuccess(company);
+    } catch (err) {
+      setError(normaliseError(err).message);
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true">
+      <div className="modal-box" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Add Historical Company</h3>
+          <button className="icon-button" onClick={onClose} aria-label="Close modal"><X size={18} /></button>
+        </div>
+        <form onSubmit={submit}>
+          <div className="form-group">
+            <label htmlFor="historical-company-name">Company Name</label>
+            <input id="historical-company-name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} required maxLength={255} />
+          </div>
+          <div className="form-group">
+            <label htmlFor="historical-company-gstin">GSTIN (optional)</label>
+            <input id="historical-company-gstin" value={gstin} onChange={(event) => setGstin(event.target.value)} maxLength={32} />
+          </div>
+          {error && <div className="inline-error"><AlertCircle size={16} /> {error}</div>}
+          <div className="modal-actions">
+            <button type="button" className="button" onClick={onClose}>Cancel</button>
+            <button type="submit" className="button primary" disabled={submitting || !displayName.trim()}>
+              {submitting ? <LoaderCircle size={16} className="spin" /> : <Plus size={16} />} Create company
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function HistoricalCompanyReviewModal({
+  invoice,
+  companies,
+  onClose,
+  onSuccess,
+}: {
+  invoice: HistoricalReviewInvoice;
+  companies: HistoricalCompanySummary[];
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const [customerId, setCustomerId] = useState(invoice.customer_id || "");
+  const [companyName, setCompanyName] = useState("");
+  const [gstin, setGstin] = useState("");
+  const [dueDate, setDueDate] = useState(invoice.due_date || "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const needsCompany = !invoice.customer_id;
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      await historicalApi.reviewInvoice(invoice.id, {
+        customer_id: customerId || undefined,
+        company_name: !customerId ? companyName.trim() || undefined : undefined,
+        gstin: !customerId ? gstin.trim() || undefined : undefined,
+        due_date: dueDate || undefined,
+      });
+      onSuccess();
+    } catch (err) {
+      setError(normaliseError(err).message);
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true">
+      <div className="modal-box" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Complete Historical Invoice Review</h3>
+          <button className="icon-button" onClick={onClose} aria-label="Close modal"><X size={18} /></button>
+        </div>
+        <form onSubmit={submit}>
+          <div className="modal-body">
+            {needsCompany && <>
+              <div className="form-field">
+                <label htmlFor="review-company">Existing Company</label>
+                <select id="review-company" value={customerId} onChange={(event) => setCustomerId(event.target.value)}>
+                  <option value="">Create a new company instead</option>
+                  {companies.map((company) => <option key={company.id} value={company.id}>{company.display_name}</option>)}
+                </select>
+              </div>
+              {!customerId && <>
+                <div className="form-field"><label htmlFor="review-company-name">New Company Name</label><input id="review-company-name" value={companyName} onChange={(event) => setCompanyName(event.target.value)} required /></div>
+                <div className="form-field"><label htmlFor="review-gstin">GSTIN (optional)</label><input id="review-gstin" value={gstin} onChange={(event) => setGstin(event.target.value)} /></div>
+              </>}
+            </>}
+            {!invoice.due_date && <div className="form-field"><label htmlFor="review-due-date">Due Date</label><input id="review-due-date" type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} required /></div>}
+            {error && <p className="error-text" role="alert">{error}</p>}
+          </div>
+          <div className="modal-footer">
+            <button type="button" className="button" onClick={onClose}>Cancel</button>
+            <button type="submit" className="button primary" disabled={saving || (needsCompany && !customerId && !companyName.trim()) || (!invoice.due_date && !dueDate)}>{saving && <LoaderCircle size={16} className="spin" />} Save review</button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }
 
@@ -257,6 +447,7 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
   const [showManualPaymentModal, setShowManualPaymentModal] = useState(false);
   const [showImportPaymentModal, setShowImportPaymentModal] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState<HistoricalInvoiceItem | null>(null);
+  const [dueDateInvoice, setDueDateInvoice] = useState<HistoricalInvoiceItem | null>(null);
 
   const loadDetail = useCallback(async () => {
     setLoading(true);
@@ -433,7 +624,13 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
                       <strong className="invoice-link">{inv.invoice_number}</strong>
                     </td>
                     <td>{date(inv.invoice_date)}</td>
-                    <td>{date(inv.due_date)}</td>
+                    <td>
+                      {inv.due_date ? date(inv.due_date) : (
+                        <button className="text-button" onClick={() => setDueDateInvoice(inv)}>
+                          Add due date
+                        </button>
+                      )}
+                    </td>
                     <td className="numeric">{money(inv.amount, inv.currency || "INR")}</td>
                     <td>
                       {inv.payment_date ? (
@@ -507,6 +704,16 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
           }}
         />
       )}
+      {dueDateInvoice && (
+        <HistoricalDueDateModal
+          invoice={dueDateInvoice}
+          onClose={() => setDueDateInvoice(null)}
+          onSuccess={() => {
+            setDueDateInvoice(null);
+            void loadDetail();
+          }}
+        />
+      )}
     </>
   );
 }
@@ -520,8 +727,8 @@ function UploadHistoricalInvoiceModal({
   onClose,
   onSuccess,
 }: {
-  companyId: string;
-  companyName: string;
+  companyId?: string;
+  companyName?: string;
   onClose: () => void;
   onSuccess: () => void;
 }) {
@@ -548,7 +755,8 @@ function UploadHistoricalInvoiceModal({
     setUploading(true);
     setError(null);
     try {
-      await historicalApi.uploadInvoice(companyId, file);
+      if (companyId) await historicalApi.uploadInvoice(companyId, file);
+      else await historicalApi.uploadUnassignedInvoice(file);
       onSuccess();
     } catch (err) {
       setError(normaliseError(err).message);
@@ -569,8 +777,8 @@ function UploadHistoricalInvoiceModal({
         <form onSubmit={handleUpload}>
           <div className="modal-body">
             <p style={{ margin: 0, fontSize: 13, color: "#60706a" }}>
-              Upload an invoice PDF explicitly bound to <strong>{companyName}</strong>. The document
-              origin is recorded as <code>HISTORICAL</code> and will be parsed asynchronously.
+              {companyName ? <>Upload an invoice PDF explicitly bound to <strong>{companyName}</strong>.</> : <>Upload an invoice PDF for automatic company discovery.</>}{" "}
+              The document origin is recorded as <code>HISTORICAL</code> and will be parsed asynchronously.
             </p>
 
             <div className="form-field">
@@ -612,6 +820,58 @@ function UploadHistoricalInvoiceModal({
               ) : (
                 "Upload Historical Invoice"
               )}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function HistoricalDueDateModal({
+  invoice,
+  onClose,
+  onSuccess,
+}: {
+  invoice: HistoricalInvoiceItem;
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const [dueDate, setDueDate] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      await historicalApi.reviewInvoice(invoice.id, { due_date: dueDate });
+      onSuccess();
+    } catch (err) {
+      setError(normaliseError(err).message);
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true">
+      <div className="modal-box" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Complete Historical Due Date</h3>
+          <button className="icon-button" onClick={onClose} aria-label="Close modal"><X size={18} /></button>
+        </div>
+        <form onSubmit={submit}>
+          <div className="modal-body">
+            <p>The PDF did not contain a confidently extractable due date. Enter the factual due date to complete this record.</p>
+            <div className="form-field">
+              <label htmlFor="historical-review-due-date">Due Date</label>
+              <input id="historical-review-due-date" type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} required />
+            </div>
+            {error && <p className="error-text" role="alert">{error}</p>}
+          </div>
+          <div className="modal-footer">
+            <button type="button" className="button" onClick={onClose}>Cancel</button>
+            <button type="submit" className="button primary" disabled={!dueDate || saving}>
+              {saving && <LoaderCircle size={16} className="spin" />} Save due date
             </button>
           </div>
         </form>

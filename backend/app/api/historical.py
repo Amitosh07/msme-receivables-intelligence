@@ -18,10 +18,13 @@ from backend.app.core.dependencies import TenantContext, get_db, get_tenant_cont
 from backend.app.models.customer import Customer
 from backend.app.models.invoice import Invoice, InvoiceOrigin
 from backend.app.schemas.historical import (
+    HistoricalCompanyCreate,
     HistoricalCompanyDetail,
     HistoricalCompanySummary,
+    HistoricalInvoiceReview,
+    HistoricalInvoiceItem,
 )
-from backend.app.schemas.invoice import InvoiceUploadResponse
+from backend.app.schemas.invoice import InvoiceResponse, InvoiceUploadResponse
 from backend.app.schemas.payment import (
     ManualPaymentRequest,
     ManualPaymentResponse,
@@ -29,11 +32,18 @@ from backend.app.schemas.payment import (
     PaymentResponse,
 )
 from backend.app.services.historical_service import (
+    create_historical_company,
     get_historical_company_detail,
     list_historical_companies,
     upload_historical_company_invoice,
+    upload_unassigned_historical_invoice,
+    complete_historical_invoice_review,
 )
-from backend.app.services.manual_payment_service import record_manual_payment
+from backend.app.services.manual_payment_service import (
+    derive_invoice_payment_status,
+    get_invoice_payment_summary,
+    record_manual_payment,
+)
 from backend.app.services.payment_import_service import (
     import_payments_file,
     preview_payments_file,
@@ -42,6 +52,104 @@ from backend.app.services.payment_import_service import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/historical", tags=["Historical Workspace"])
+
+
+@router.post(
+    "/invoices/upload",
+    response_model=InvoiceUploadResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Upload a historical invoice for automatic company discovery",
+)
+async def upload_historical_invoice(
+    file: UploadFile = File(...),
+    tenant_ctx: TenantContext = Depends(get_tenant_context),
+    db: Session = Depends(get_db),
+) -> InvoiceUploadResponse:
+    doc, task = upload_unassigned_historical_invoice(
+        db, tenant_ctx.business_id, await file.read(), file.filename or "historical_invoice.pdf"
+    )
+    return InvoiceUploadResponse(
+        document_id=doc.id, invoice_id=doc.invoice_id,
+        original_filename=doc.original_filename, file_size=doc.file_size,
+        processing_status=doc.processing_status, origin=doc.origin,
+        task_id=task.id, created_at=doc.created_at,
+    )
+
+
+@router.patch(
+    "/invoices/{invoice_id}/review",
+    response_model=HistoricalInvoiceItem,
+    summary="Complete company or due-date review for a historical invoice",
+)
+def review_historical_invoice(
+    invoice_id: uuid.UUID,
+    payload: HistoricalInvoiceReview,
+    tenant_ctx: TenantContext = Depends(get_tenant_context),
+    db: Session = Depends(get_db),
+) -> HistoricalInvoiceItem:
+    try:
+        invoice = complete_historical_invoice_review(
+            db, tenant_ctx.business_id, invoice_id,
+            customer_id=payload.customer_id, company_name=payload.company_name,
+            gstin=payload.gstin, due_date=payload.due_date,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    total_paid, outstanding = get_invoice_payment_summary(db, invoice)
+    return HistoricalInvoiceItem(
+        id=invoice.id, invoice_number=invoice.invoice_number,
+        invoice_date=invoice.invoice_date, due_date=invoice.due_date,
+        amount=float(invoice.amount), currency=invoice.currency, origin=invoice.origin,
+        payment_status=derive_invoice_payment_status(db, invoice),
+        processing_status=invoice.processing_status,
+        total_paid=float(total_paid), outstanding_balance=float(outstanding),
+        payment_count=len(invoice.payments), document_id=invoice.document_id,
+    )
+
+
+@router.get(
+    "/invoices/review",
+    response_model=List[InvoiceResponse],
+    summary="List historical invoices awaiting manual completion",
+)
+def list_historical_invoice_reviews(
+    tenant_ctx: TenantContext = Depends(get_tenant_context),
+    db: Session = Depends(get_db),
+) -> List[InvoiceResponse]:
+    return list(db.scalars(
+        select(Invoice).where(
+            Invoice.business_id == tenant_ctx.business_id,
+            Invoice.origin == InvoiceOrigin.HISTORICAL.value,
+            Invoice.processing_status == "NEEDS_REVIEW",
+        ).order_by(Invoice.created_at.desc())
+    ).all())
+
+
+@router.post(
+    "/companies",
+    response_model=HistoricalCompanySummary,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a tenant-scoped historical company",
+)
+def post_historical_company(
+    payload: HistoricalCompanyCreate,
+    tenant_ctx: TenantContext = Depends(get_tenant_context),
+    db: Session = Depends(get_db),
+) -> HistoricalCompanySummary:
+    try:
+        return create_historical_company(
+            db, tenant_ctx.business_id, payload.display_name, payload.gstin
+        )
+    except FileExistsError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
 
 
 @router.get(
@@ -151,6 +259,7 @@ def record_historical_payment(
         select(Invoice).where(
             Invoice.id == invoice_id,
             Invoice.business_id == tenant_ctx.business_id,
+            Invoice.origin == InvoiceOrigin.HISTORICAL.value,
         )
     )
     if not invoice:
@@ -216,6 +325,7 @@ def record_company_historical_payment(
             Invoice.id == invoice_id,
             Invoice.business_id == tenant_ctx.business_id,
             Invoice.customer_id == customer_id,
+            Invoice.origin == InvoiceOrigin.HISTORICAL.value,
         )
     )
     if not invoice:

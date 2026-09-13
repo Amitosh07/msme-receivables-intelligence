@@ -7,7 +7,7 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKey, Index, String, text
+from sqlalchemy import Boolean, ForeignKey, Index, String, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym, validates
 
@@ -33,9 +33,10 @@ class Customer(Base, TimestampMixin):
             postgresql_where=text("normalized_gstin IS NOT NULL"),
         ),
         Index(
-            "ix_customers_business_normalized_name",
+            "uq_customers_business_normalized_name",
             "business_id",
             "normalized_name",
+            unique=True,
         ),
     )
 
@@ -69,6 +70,12 @@ class Customer(Base, TimestampMixin):
     normalized_gstin: Mapped[str | None] = mapped_column(
         String(15),
         nullable=True,
+    )
+    has_historical_context: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
     )
 
     # Compatibility for existing application code while display_name remains
