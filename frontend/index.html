@@ -1,5 +1,18 @@
 <!doctype html>
-<html lang="en">
-  <head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>Receivables</title></head>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Receivables</title>
+    <script>
+      (function () {
+        var theme = "light";
+        try { if (localStorage.getItem("receivables-theme") === "dark") theme = "dark"; } catch (e) {}
+        document.documentElement.setAttribute("data-theme", theme);
+        document.documentElement.style.colorScheme = theme;
+      })();
+    </script>
+  </head>
   <body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body>
 </html>

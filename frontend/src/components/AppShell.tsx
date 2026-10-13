@@ -3,6 +3,7 @@ import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useState } from "react";
 import { useAuth } from "../features/auth";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { ThemeToggle } from "./ThemeToggle";
 const links = [
   { to: "/", label: "Overview", icon: LayoutDashboard },
   { to: "/invoices", label: "Invoices", icon: ReceiptText },
@@ -52,7 +53,10 @@ export function AppShell() {
             <p className="eyebrow">{user?.business_name}</p>
             <h1>{title}</h1>
           </div>
-          {location.pathname !== "/upload" && <Link to="/upload" className="button primary">Upload invoice</Link>}
+          <div className="header-actions">
+            <ThemeToggle />
+            {location.pathname !== "/upload" && <Link to="/upload" className="button primary">Upload invoice</Link>}
+          </div>
         </header>
         <div className="content"><ErrorBoundary><Outlet /></ErrorBoundary></div>
       </main>

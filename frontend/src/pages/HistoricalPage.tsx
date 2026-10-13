@@ -607,7 +607,7 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
 
       {/* Historical Invoices Table */}
       <div className="table-section panel" style={{ padding: 0 }}>
-        <div className="panel-heading" style={{ padding: "18px 22px", margin: 0, borderBottom: "1px solid #edf0ec" }}>
+        <div className="panel-heading" style={{ padding: "18px 22px", margin: 0, borderBottom: "1px solid var(--divider)" }}>
           <div>
             <h2 style={{ fontSize: 16, margin: 0 }}>Historical Invoices</h2>
             <p style={{ margin: 0 }}>
@@ -667,7 +667,7 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
                     <td className="numeric">{money(inv.amount, inv.currency)}</td>
                     <td>
                       {inv.payment_date ? (
-                        <span style={{ color: "#1d6b3a", fontWeight: 600 }}>
+                        <span style={{ color: "var(--positive)", fontWeight: 600 }}>
                           {date(inv.payment_date)}
                         </span>
                       ) : (
@@ -881,7 +881,7 @@ function ChangeHistoricalInvoiceCompanyModal({
         </div>
         <form onSubmit={handleSubmit}>
           <div className="modal-body">
-            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: "#485550" }}>
+            <p className="modal-text">
               Reassign invoice <strong>{invoice.invoice_number ? invoiceLabel(invoice.invoice_number) : "without number"}</strong> ({money(invoice.amount, invoice.currency)}) from <strong>{currentCompanyName}</strong> to another company.
             </p>
 
@@ -932,7 +932,7 @@ function ChangeHistoricalInvoiceCompanyModal({
                     onChange={(e) => setCreateIfMissing(e.target.checked)}
                     style={{ marginTop: 3 }}
                   />
-                  <label htmlFor="confirm-create-if-missing" style={{ fontSize: 12, lineHeight: 1.4, color: "#485550", cursor: "pointer" }}>
+                  <label htmlFor="confirm-create-if-missing" style={{ fontSize: 12, lineHeight: 1.4, color: "var(--text-2)", cursor: "pointer" }}>
                     Confirm creating a new historical company if no existing company matches this name.
                   </label>
                 </div>
@@ -983,10 +983,10 @@ function DeleteHistoricalCompanyModal({
           </button>
         </div>
         <div className="modal-body">
-          <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: "#485550" }}>
+          <p className="modal-text">
             Are you sure you want to delete <strong>{companyName}</strong> from your historical workspace?
           </p>
-          <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: "#71807a" }}>
+          <p className="modal-text secondary">
             This will permanently remove historical invoices, payments, and documents associated with this company. If this company also has active operational records, its operational data will remain preserved.
           </p>
           {error && (
@@ -1001,10 +1001,9 @@ function DeleteHistoricalCompanyModal({
           </button>
           <button
             type="button"
-            className="button"
+            className="button danger"
             onClick={onConfirm}
             disabled={deleting}
-            style={{ background: "#a94e2d", color: "#fff", borderColor: "#a94e2d" }}
           >
             {deleting ? <LoaderCircle size={16} className="spin" /> : <X size={16} />}
             Delete company
@@ -1125,7 +1124,7 @@ function UploadHistoricalInvoiceModal({
 
         <form onSubmit={handleUpload}>
           <div className="modal-body">
-            <p style={{ margin: 0, fontSize: 13, color: "#60706a" }}>
+            <p className="modal-text">
               {companyName ? <>Upload an invoice PDF explicitly bound to <strong>{companyName}</strong>.</> : <>Upload an invoice PDF for automatic company discovery.</>}{" "}
               The document origin is recorded as <code>HISTORICAL</code> and will be parsed asynchronously.
             </p>
@@ -1392,7 +1391,7 @@ function ManualPaymentModal({
         <form onSubmit={handleSubmit}>
           <div className="modal-body">
             {invoices.length === 0 ? (
-              <p style={{ margin: 0, color: "#60706a" }}>
+              <p className="modal-text">
                 No historical invoices found to record payment against.
               </p>
             ) : (
@@ -1571,7 +1570,7 @@ function ImportPaymentModal({
         </div>
 
         <div className="modal-body">
-          <p style={{ margin: 0, fontSize: 13, color: "#60706a" }}>
+          <p className="modal-text">
             Import historical payment settlements strictly scoped to <strong>{companyName}</strong>.
             Supported formats: CSV or XLSX with <code>invoice_number</code>, <code>payment_date</code>,
             and <code>payment_amount</code> columns.
@@ -1606,16 +1605,16 @@ function ImportPaymentModal({
             <div
               className="panel"
               style={{
-                background: isCommitted ? "#edf8f0" : "#f8faf9",
-                border: isCommitted ? "1px solid #8dc4a0" : "1px solid #d9e1dc",
+                background: isCommitted ? "var(--positive-soft)" : "var(--surface-2)",
+                border: isCommitted ? "1px solid var(--positive-border)" : "1px solid var(--border)",
                 padding: 16,
               }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                <span style={{ color: isCommitted ? "#1d6b3a" : "#1f6051", display: "inline-flex" }}>
+                <span style={{ color: isCommitted ? "var(--positive)" : "var(--accent)", display: "inline-flex" }}>
                   <CheckCircle2 size={18} />
                 </span>
-                <strong style={{ fontSize: 13, color: isCommitted ? "#1d6b3a" : "#172022" }}>
+                <strong style={{ fontSize: 13, color: isCommitted ? "var(--positive)" : "var(--text)" }}>
                   {isCommitted ? "Import Completed Successfully" : "Validation Preview"}
                 </strong>
               </div>
@@ -1623,19 +1622,19 @@ function ImportPaymentModal({
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px 16px", fontSize: 12 }}>
                 <div>Total rows: <strong>{summary.total_rows}</strong></div>
                 <div>Valid rows: <strong>{summary.valid_rows}</strong></div>
-                <div>Matched invoices: <strong style={{ color: "#1d6b3a" }}>{summary.matched}</strong></div>
+                <div>Matched invoices: <strong className="text-positive">{summary.matched}</strong></div>
                 <div>Unmatched rows: <strong>{summary.unmatched}</strong></div>
                 <div>Repeated in file: <strong>{summary.duplicates_in_file}</strong></div>
                 <div>Existing recorded: <strong>{summary.duplicates_existing}</strong></div>
                 {summary.rejected > 0 && (
-                  <div style={{ color: "#a94e2d" }}>
+                  <div className="text-negative">
                     Rejected rows: <strong>{summary.rejected}</strong>
                   </div>
                 )}
               </div>
 
               {summary.errors.length > 0 && (
-                <div style={{ marginTop: 10, padding: 8, background: "#fff", borderRadius: 4, fontSize: 11, border: "1px solid #ebd3b4" }}>
+                <div style={{ marginTop: 10, padding: 8, background: "var(--surface)", borderRadius: 8, fontSize: 11, border: "1px solid var(--warning-border)" }}>
                   <strong>Errors detected ({summary.errors.length}):</strong>
                   <ul style={{ margin: "4px 0 0", paddingLeft: 16 }}>
                     {summary.errors.slice(0, 3).map((err, idx) => (

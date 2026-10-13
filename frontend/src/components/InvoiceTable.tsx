@@ -145,7 +145,7 @@ export function InvoiceTable({
                       {invoiceDisplay}
                     </Link>
                   </td>
-                  <td>{invoice.customer_name || <span className="muted">Not identified</span>}</td>
+                  <td className="wrap">{invoice.customer_name || <span className="muted">Not identified</span>}</td>
                   <td className="numeric">
                     {money(invoice.amount, invoice.currency)}
                     {partial && <small className="cell-note">{money(invoice.outstanding_balance, invoice.currency)} left</small>}

@@ -1,0 +1,179 @@
+/*
+ * Design tokens. Every color in the app resolves to one of these variables, so
+ * switching html[data-theme] re-themes the whole UI without touching components.
+ * Light is the default; dark is opt-in via the theme switcher.
+ */
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* Surfaces */
+  --bg: #f3f4f4;
+  --surface: #ffffff;
+  --surface-2: #f7f8f8;
+  --surface-3: #eef0f0;
+  --surface-hover: #f5f7f6;
+  --sidebar: #ffffff;
+  --nav-active: #f0f2f1;
+  --nav-hover: #f5f6f6;
+
+  /* Text */
+  --text: #222222;
+  --text-2: #4f5653;
+  --text-3: #858585;
+  --text-inverse: #ffffff;
+
+  /* Lines */
+  --border: #e8eaea;
+  --border-strong: #d9dddc;
+  --divider: #eff1f0;
+
+  /* Brand / accent */
+  --accent: #1f6b54;
+  --accent-hover: #17573f;
+  --accent-contrast: #ffffff;
+  --accent-soft: #e7f4ed;
+  --accent-soft-border: #bfe0cd;
+  --link: #1f6b54;
+  --brand-mark-bg: #1f6b54;
+  --brand-mark-text: #ffffff;
+  --focus-ring: rgba(46, 155, 98, 0.45);
+
+  /* Status */
+  --positive: #1f7a47;
+  --positive-soft: #e3f5ea;
+  --positive-border: #a9dcbc;
+  --negative: #b8432f;
+  --negative-soft: #fdecea;
+  --negative-border: #f0b7ad;
+  --warning: #96600f;
+  --warning-soft: #fdf3e1;
+  --warning-border: #ebcb8f;
+  --neutral-soft: #f0f1f1;
+  --neutral-text: #5d6461;
+  --danger-solid: #c2412d;
+  --danger-solid-hover: #a63725;
+
+  /* Data visualisation */
+  --chart-1: #4caf72;
+  --chart-1-strong: #2f8f57;
+  --chart-2: #d2a04a;
+  --chart-2-light: #ead2a6;
+  --chart-raise: #d27e5c;
+  --chart-lower: #4caf72;
+  --chart-track: #eef0ef;
+  --chart-baseline: #e3e6e5;
+  --aging-1: #4caf72;
+  --aging-2: #d4a23c;
+  --aging-3: #d4823a;
+  --aging-4: #c45f3c;
+  --aging-5: #9c3d31;
+  --aging-text: #ffffff;
+
+  /* Overlays */
+  --tooltip-bg: #222222;
+  --tooltip-text: #f5f5f5;
+  --tooltip-link: #9ee0bb;
+  --overlay: rgba(23, 23, 23, 0.42);
+
+  /* Auth hero panel */
+  --hero-bg: #17352c;
+  --hero-text: #ffffff;
+  --hero-muted: #a9bfb4;
+  --hero-accent: #9fdcbb;
+  --hero-card: #1f4237;
+  --hero-card-inner: #275043;
+  --hero-card-border: #346356;
+  --hero-bar: #7cc49d;
+
+  /* Shape & depth */
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-pill: 999px;
+  --shadow-sm: 0 1px 2px rgba(17, 24, 22, 0.04);
+  --shadow-card: 0 1px 2px rgba(17, 24, 22, 0.03), 0 1px 1px rgba(17, 24, 22, 0.02);
+  --shadow-md: 0 8px 24px rgba(17, 24, 22, 0.08);
+  --shadow-lg: 0 24px 48px rgba(17, 24, 22, 0.18);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #171717;
+  --surface: #232323;
+  --surface-2: #2a2a2a;
+  --surface-3: #313131;
+  --surface-hover: #2b2b2b;
+  --sidebar: #232323;
+  --nav-active: #303030;
+  --nav-hover: #2a2a2a;
+
+  --text: #f1f1f1;
+  --text-2: #c2c2c2;
+  --text-3: #929292;
+  --text-inverse: #171717;
+
+  --border: #2f2f2f;
+  --border-strong: #3c3c3c;
+  --divider: #2d2d2d;
+
+  --accent: #5cc98d;
+  --accent-hover: #74d6a0;
+  --accent-contrast: #10241a;
+  --accent-soft: rgba(92, 201, 141, 0.13);
+  --accent-soft-border: rgba(92, 201, 141, 0.32);
+  --link: #7dd6a5;
+  --brand-mark-bg: #5cc98d;
+  --brand-mark-text: #10241a;
+  --focus-ring: rgba(92, 201, 141, 0.55);
+
+  --positive: #6fd39b;
+  --positive-soft: rgba(111, 211, 155, 0.13);
+  --positive-border: rgba(111, 211, 155, 0.34);
+  --negative: #f2867a;
+  --negative-soft: rgba(242, 134, 122, 0.13);
+  --negative-border: rgba(242, 134, 122, 0.36);
+  --warning: #f0bc68;
+  --warning-soft: rgba(240, 188, 104, 0.13);
+  --warning-border: rgba(240, 188, 104, 0.36);
+  --neutral-soft: #333333;
+  --neutral-text: #c2c2c2;
+  --danger-solid: #d9503b;
+  --danger-solid-hover: #e8644f;
+
+  --chart-1: #5cc98d;
+  --chart-1-strong: #86dcab;
+  --chart-2: #d9aa55;
+  --chart-2-light: #6e5a33;
+  --chart-raise: #e08b6a;
+  --chart-lower: #5cc98d;
+  --chart-track: #333333;
+  --chart-baseline: #383838;
+  --aging-1: #4fb87e;
+  --aging-2: #c99a3a;
+  --aging-3: #c97a3a;
+  --aging-4: #c25c40;
+  --aging-5: #a64538;
+  --aging-text: #ffffff;
+
+  --tooltip-bg: #f1f1f1;
+  --tooltip-text: #1c1c1c;
+  --tooltip-link: #1f6b54;
+  --overlay: rgba(0, 0, 0, 0.62);
+
+  --hero-bg: #1c1c1c;
+  --hero-text: #f1f1f1;
+  --hero-muted: #929292;
+  --hero-accent: #7dd6a5;
+  --hero-card: #262626;
+  --hero-card-inner: #2f2f2f;
+  --hero-card-border: #383838;
+  --hero-bar: #5cc98d;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 24px 48px rgba(0, 0, 0, 0.55);
+}
