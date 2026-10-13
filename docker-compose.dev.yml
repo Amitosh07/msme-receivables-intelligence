@@ -1,0 +1,25 @@
+# Development infrastructure only: Redis on localhost:6379 for an API and
+# worker running on the host (uvicorn --reload, python -m backend.app.workers.runtime).
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#
+# The full stack lives in docker-compose.yml.
+
+name: msme-receivables-intelligence
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: msme_redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  redis_data:

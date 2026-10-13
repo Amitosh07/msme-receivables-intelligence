@@ -18,8 +18,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useAsync } from "../hooks/useAsync";
 import { invoicesApi, normaliseError, paymentsApi, predictionsApi } from "../lib/api";
-import { date, money, titleCase } from "../lib/format";
+import { date, invoiceLabel, money, titleCase } from "../lib/format";
+import { todayISO } from "../lib/aging";
+import { notifyDataChanged } from "../lib/events";
 import { RiskBadge, StatusBadge } from "../components/Badges";
+import { EstimateDrivers, ModelInsightsDetails } from "../components/EstimateExplanation";
 import { ErrorState, LoadingState } from "../components/States";
 import type { ManualPaymentRequest, PaymentProof, PaymentRecord } from "../lib/types";
 
@@ -72,7 +75,7 @@ export function InvoiceDetailPage() {
     try {
       await predictionsApi.create(invoice.id);
       await state.refresh(false);
-      window.dispatchEvent(new Event("msme:data-changed"));
+      notifyDataChanged();
     } catch (error) {
       setPredictionError(normaliseError(error).message);
     } finally {
@@ -89,8 +92,8 @@ export function InvoiceDetailPage() {
     <section className="detail-head">
       <div>
         <p className="eyebrow">Invoice</p>
-        <h2>{invoice.invoice_number || "—"}</h2>
-        <p>Created {date(invoice.created_at.slice(0, 10))}</p>
+        <h2>{invoiceLabel(invoice.invoice_number)}</h2>
+        <p>{invoice.customer_name ? `${invoice.customer_name} · ` : ""}Created {date(invoice.created_at.slice(0, 10))}</p>
       </div>
       <div className="detail-value">
         <strong>{money(invoice.amount, invoice.currency)}</strong>
@@ -102,6 +105,12 @@ export function InvoiceDetailPage() {
       <section className="detail-section">
         <h2>Invoice facts</h2>
         <dl>
+          <Fact
+            label="Customer"
+            value={invoice.customer_name
+              ? <>{invoice.customer_name}{!invoice.customer_id && <small className="muted"> · not yet matched to a customer record</small>}</>
+              : "Not identified"}
+          />
           <Fact label="Invoice date" value={date(invoice.invoice_date)} />
           <Fact label="Due date" value={date(invoice.due_date)} />
           <Fact label="Payment terms" value={invoice.payment_terms || "Not available"} />
@@ -154,7 +163,7 @@ export function InvoiceDetailPage() {
             onSuccess={async () => {
               setShowPaymentForm(false);
               await state.refresh(false);
-              window.dispatchEvent(new Event("msme:data-changed"));
+              notifyDataChanged();
             }}
             onCancel={() => setShowPaymentForm(false)}
           />
@@ -168,7 +177,7 @@ export function InvoiceDetailPage() {
             onVerified={async () => {
               await state.refresh(false);
               await refreshProofs();
-              window.dispatchEvent(new Event("msme:data-changed"));
+              notifyDataChanged();
             }}
             onCancel={() => setShowProofUpload(false)}
           />
@@ -225,6 +234,7 @@ export function InvoiceDetailPage() {
               </div>
             </div>
             <small className="disclaimer">This is a model estimate, not a confirmed payment date.</small>
+            <WhyThisEstimate invoiceId={invoice.id} version={`${prediction.risk_score}:${prediction.expected_payment_date}`} />
             <button className="button secondary" onClick={generate} disabled={generating}>
               {generating ? "Refreshing estimate…" : "Re-generate prediction"}
             </button>
@@ -253,6 +263,24 @@ export function InvoiceDetailPage() {
       </section>
     </div>
   </>;
+}
+
+function WhyThisEstimate({ invoiceId, version }: { invoiceId: string; version: string }) {
+  const state = useAsync(
+    () => Promise.all([predictionsApi.explain(invoiceId), predictionsApi.insights()]),
+    [invoiceId, version],
+  );
+  if (state.loading) return <p className="quiet">Loading the reasons behind this estimate…</p>;
+  if (state.error || !state.data) return <p className="quiet">The reasons behind this estimate could not be loaded.</p>;
+  const [explanation, insights] = state.data;
+  return (
+    <section className="why-estimate">
+      <h3>Why this estimate</h3>
+      <EstimateDrivers explanation={explanation} />
+      <ModelInsightsDetails insights={insights} />
+      <small className="disclaimer">{explanation.method}</small>
+    </section>
+  );
 }
 
 /* ──────────────────────────────────────────────────── */
@@ -483,7 +511,7 @@ function PaymentForm({
   onSuccess: () => void;
   onCancel: () => void;
 }) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayISO();
   const [paymentDate, setPaymentDate] = useState(today);
   const [amount, setAmount] = useState(outstandingBalance > 0 ? String(outstandingBalance) : "");
   const [reference, setReference] = useState("");

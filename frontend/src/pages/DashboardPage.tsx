@@ -1,45 +1,23 @@
-import { AlertTriangle, ArrowRight, CalendarDays, ReceiptText, Wallet } from "../components/Icons";
+import { AlertCircle, AlertTriangle, ArrowRight, CalendarClock, Wallet } from "../components/Icons";
 import { Link, useNavigate } from "react-router-dom";
 import { useAsync } from "../hooks/useAsync";
-import { invoicesApi, normaliseError, predictionsApi } from "../lib/api";
-import { money, date } from "../lib/format";
+import { customersApi, dashboardApi, normaliseError } from "../lib/api";
+import { money, invoiceLabel, paymentRecord } from "../lib/format";
+import { barWidths } from "../lib/totals";
 import { EmptyState, ErrorState, LoadingState } from "../components/States";
-import type { Invoice, Prediction } from "../lib/types";
+import { RiskBadge, StatusBadge } from "../components/Badges";
+import { CashflowChart } from "../components/CashflowForecast";
+import type { AmountCount, DashboardSummary, PriorityInvoice } from "../lib/types";
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 export function DashboardPage() {
   const navigate = useNavigate();
-  const state = useAsync(async () => { const [i, p] = await Promise.all([invoicesApi.listAll(), predictionsApi.listAll()]); return { invoices: i.items, predictions: p.items }; }, []);
+  const state = useAsync(() => dashboardApi.summary(), []);
   if (state.loading) return <LoadingState label="Loading receivables overview…" />;
   if (state.error) return <ErrorState message={normaliseError(state.error).message} retry={state.refresh} />;
-  const { invoices, predictions } = state.data!;
-  const today = new Date().toISOString().slice(0, 10);
-  const open = invoices.filter(i => i.payment_status === "OPEN");
-  const pred = new Map(predictions.map(p => [p.invoice_id, p]));
-  const overdue = open.filter(i => Boolean(i.due_date) && i.due_date! < today);
-  const high = open.filter(i => pred.get(i.id)?.risk_tier === "HIGH");
-  const expected = open.filter(i => pred.get(i.id)?.expected_payment_date);
-
-  const displayTotal = (items: Invoice[]) => {
-    if (!items.length) return "₹0";
-    const currencies = [...new Set(items.map(i => i.currency).filter(Boolean))];
-    return currencies.length === 1 ? money(items.reduce((sum, i) => sum + i.amount, 0), currencies[0]) : money(items.reduce((sum, i) => sum + i.amount, 0), "INR");
-  };
-
-  const expectedAmount = expected.reduce((sum, i) => sum + i.amount, 0);
-  const expectedCurrencies = [...new Set(expected.map(i => i.currency).filter(Boolean))];
-  const expectedCurrency = expectedCurrencies.length === 1 ? expectedCurrencies[0]! : "INR";
-  const displayExpected = expected.length ? money(expectedAmount, expectedCurrency) : "₹0";
-
-  const buckets = [["Current", "current"], ["1–30 days", "1-30"], ["31–60 days", "31-60"], ["61–90 days", "61-90"], ["90+ days", "90+"]].map(([label, key]) => ({
-    label,
-    key,
-    items: open.filter(i => {
-      if (!i.due_date) return false;
-      const age = Math.max(0, Math.floor((new Date(today).getTime() - new Date(i.due_date).getTime()) / 86400000));
-      return key === "current" ? i.due_date >= today : key === "1-30" ? age <= 30 : key === "31-60" ? age <= 60 && age >= 31 : key === "61-90" ? age <= 90 && age >= 61 : age > 90;
-    })
-  }));
-  const max = Math.max(1, open.length);
+  const summary = state.data!;
+  const total = (segment: AmountCount) => money(segment.amount, summary.currency);
 
   return (
     <>
@@ -47,70 +25,76 @@ export function DashboardPage() {
         <Metric
           icon={Wallet}
           label="Outstanding"
-          value={open.length ? displayTotal(open) : "₹0"}
-          detail={open.length ? `${open.length} open invoices` : "0 open invoices"}
-          onClick={() => navigate("/invoices?status=OPEN")}
+          value={total(summary.outstanding)}
+          detail={`${plural(summary.outstanding.count, "invoice")} to collect`}
+          onClick={() => navigate("/invoices?status=OUTSTANDING")}
         />
         <Metric
           icon={AlertTriangle}
           label="Overdue"
-          value={overdue.length ? displayTotal(overdue) : "₹0"}
-          detail={overdue.length ? `${overdue.length} past due` : "0 past due"}
-          onClick={() => navigate("/invoices?status=OPEN&aging=1-30")}
+          value={total(summary.overdue)}
+          detail={summary.overdue.count ? `${plural(summary.overdue.count, "invoice")} past due` : "Nothing past due"}
+          onClick={() => navigate("/invoices?status=OUTSTANDING&aging=overdue")}
         />
         <Metric
-          icon={ReceiptText}
-          label="Needs attention"
-          value={String(high.length)}
-          detail={high.length ? "High late-payment risk" : "0 high risk"}
-          onClick={() => navigate("/invoices?risk=HIGH")}
+          icon={CalendarClock}
+          label="Due soon"
+          value={total(summary.due_soon)}
+          detail={`${plural(summary.due_soon.count, "invoice")} due in ${summary.due_soon_days} days`}
+          onClick={() => navigate("/invoices?status=OUTSTANDING&aging=due-soon")}
         />
         <Metric
-          icon={CalendarDays}
-          label="Expected payments"
-          value={displayExpected}
-          detail={expected.length ? `${expected.length} payment estimates` : "0 payment estimates"}
-          onClick={() => navigate("/invoices")}
+          icon={AlertCircle}
+          label="High risk"
+          value={total(summary.high_risk)}
+          detail={summary.high_risk.count ? `${plural(summary.high_risk.count, "invoice")} likely to pay late` : "No high-risk estimates"}
+          onClick={() => navigate("/invoices?status=OUTSTANDING&risk=HIGH")}
         />
       </section>
+      {(summary.undated.count > 0 || summary.mixed_currency) && (
+        <p className="quiet dashboard-note">
+          {summary.undated.count > 0 && `${plural(summary.undated.count, "invoice")} (${total(summary.undated)}) have no due date, so they are not aged. `}
+          {summary.mixed_currency && "Invoices use more than one currency; totals are added without conversion."}
+        </p>
+      )}
 
-      {!invoices.length ? (
+      {!summary.current_invoice_count ? (
         <section style={{ marginTop: "24px" }}>
           <EmptyState
             title="No receivables yet"
-            detail="Upload your first invoice to start building your receivables overview and risk insights."
+            detail="Upload an invoice you are still collecting to build your receivables overview. Past, settled invoices belong in Historical Data."
             action={<Link className="button primary" to="/upload">Upload an invoice</Link>}
           />
         </section>
       ) : (
         <section className="dashboard-grid">
-          <Panel title="Prioritize follow-up" subtitle="A/R aging · select a segment to filter invoices" link="View invoices" to="/invoices">
-            <div className="aging-bar">
-              {buckets.map(b => (
-                <button
-                  key={b.key}
-                  onClick={() => navigate("/invoices?status=OPEN&aging=" + b.key)}
-                  style={{ width: (b.items.length / max * 100) + "%" }}
-                  aria-label={b.label + ": " + b.items.length + " invoices"}
-                >
-                  {b.items.length || ""}
-                </button>
-              ))}
-            </div>
-            <div className="aging-legend">
-              {buckets.map(b => (
-                <button key={b.key} onClick={() => navigate("/invoices?status=OPEN&aging=" + b.key)}>
-                  <i /> {b.label} <b>{b.items.length}</b>
-                </button>
-              ))}
-            </div>
-          </Panel>
-          <Panel title="Expected payments" subtitle="Model estimates — not confirmed payment dates" link="View invoices" to="/invoices">
-            {expected.length ? (
-              <Projection invoices={expected} predictions={pred} />
+          <Panel
+            title="Needs attention"
+            subtitle="Outstanding invoices ranked by amount, lateness and late-payment risk"
+            link="View outstanding"
+            to="/invoices?status=OUTSTANDING"
+            wide
+          >
+            {summary.priority.length ? (
+              <PriorityList items={summary.priority} fallbackCurrency={summary.currency} />
             ) : (
-              <p className="quiet">No payment estimates yet. Generate predictions to populate the cash-flow outlook.</p>
+              <p className="quiet">Nothing needs follow-up right now: no invoices are overdue, due in the next {summary.due_soon_days} days, or at high risk.</p>
             )}
+          </Panel>
+          <Panel title="A/R aging" subtitle="Remaining balance by days past due · select a segment to filter" link="View invoices" to="/invoices?status=OUTSTANDING">
+            <Aging summary={summary} onSelect={(key) => navigate(`/invoices?status=OUTSTANDING&aging=${key}`)} />
+          </Panel>
+          <Panel title="Largest balances" subtitle="Who owes the most, and how they have paid before" link="All customers" to="/customers">
+            <TopCustomers />
+          </Panel>
+          <Panel
+            title="Cash-flow forecast"
+            subtitle="Expected collections by week: expected payment date × remaining balance. Estimates, not confirmed payments."
+            link="View outstanding"
+            to="/invoices?status=OUTSTANDING"
+            wide
+          >
+            <CashflowSection />
           </Panel>
         </section>
       )}
@@ -129,9 +113,9 @@ function Metric({ icon: Icon, label, value, detail, onClick }: { icon: typeof Wa
   );
 }
 
-function Panel({ title, subtitle, link, to, children }: { title: string; subtitle: string; link: string; to: string; children: React.ReactNode }) {
+function Panel({ title, subtitle, link, to, wide, children }: { title: string; subtitle: string; link: string; to: string; wide?: boolean; children: React.ReactNode }) {
   return (
-    <section className="panel">
+    <section className={wide ? "panel panel-wide" : "panel"}>
       <div className="panel-heading">
         <div>
           <h2>{title}</h2>
@@ -147,34 +131,96 @@ function Panel({ title, subtitle, link, to, children }: { title: string; subtitl
   );
 }
 
-function Projection({ invoices, predictions }: { invoices: Invoice[]; predictions: Map<string, Prediction> }) {
-  const grouped = new Map<string, Invoice[]>();
-  invoices.forEach(i => {
-    const day = predictions.get(i.id)?.expected_payment_date;
-    if (day) grouped.set(day, [...(grouped.get(day) || []), i]);
-  });
-  const points = [...grouped]
-    .filter(([day]) => day <= new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10))
-    .sort(([a], [b]) => a.localeCompare(b));
-  const max = Math.max(...points.map(([, items]) => items.reduce((sum, i) => sum + i.amount, 0)), 1);
-
+function PriorityList({ items, fallbackCurrency }: { items: PriorityInvoice[]; fallbackCurrency: string }) {
   return (
-    <div className="projection" role="img" aria-label="Expected payments projection for the next 30 days">
-      {points.map(([day, items]) => {
-        const amount = items.reduce((sum, i) => sum + i.amount, 0);
-        return (
-          <div className="projection-point" key={day} style={{ height: Math.max(12, amount / max * 100) + "%" }} tabIndex={0}>
-            <span className="projection-tip">
-              <b>{date(day)}</b>
-              <br />
-              {items.length === 1 ? money(amount, items[0].currency) : items.length + " invoices"}
-              <br />
-              {items.map(i => (i.invoice_number || "—") + " · " + money(i.amount, i.currency)).join("\n")}
-            </span>
+    <ol className="priority-list">
+      {items.map((item) => (
+        <li key={item.invoice_id}>
+          <div>
+            <Link to={`/invoices/${item.invoice_id}`}>
+              {invoiceLabel(item.invoice_number)}
+              {item.customer_name ? ` · ${item.customer_name}` : ""}
+            </Link>
+            <span>{item.reasons.join(" · ")}</span>
           </div>
-        );
-      })}
-      <div className="projection-axis">Next 30 days · estimated payment dates</div>
-    </div>
+          <div>
+            <strong className="numeric">{money(item.outstanding_balance, item.currency || fallbackCurrency)}</strong>
+            {item.risk_tier ? (
+              <RiskBadge tier={item.risk_tier} score={item.risk_score ?? undefined} />
+            ) : (
+              <StatusBadge value={item.payment_status} />
+            )}
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function Aging({ summary, onSelect }: { summary: DashboardSummary; onSelect: (key: string) => void }) {
+  const widths = barWidths(summary.aging.map((bucket) => bucket.amount));
+  return (
+    <>
+      <div className="aging-bar">
+        {summary.aging.map((bucket, i) => (
+          <button
+            key={bucket.key}
+            onClick={() => onSelect(bucket.key)}
+            style={{ width: `${widths[i]}%` }}
+            aria-label={`${bucket.label}: ${plural(bucket.count, "invoice")}, ${money(bucket.amount, summary.currency)}`}
+          >
+            {bucket.count || ""}
+          </button>
+        ))}
+      </div>
+      <div className="aging-legend">
+        {summary.aging.map((bucket) => (
+          <button key={bucket.key} onClick={() => onSelect(bucket.key)}>
+            <i /> {bucket.label} <b>{bucket.count}</b> <span className="numeric">{money(bucket.amount, summary.currency)}</span>
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function CashflowSection() {
+  const state = useAsync(() => dashboardApi.cashflow(), []);
+  if (state.loading) return <LoadingState label="Building forecast…" />;
+  if (state.error || !state.data) return <ErrorState message={normaliseError(state.error).message} retry={state.refresh} />;
+  return <CashflowChart forecast={state.data} />;
+}
+
+function TopCustomers() {
+  const state = useAsync(() => customersApi.balances(), []);
+  if (state.loading) return <LoadingState label="Loading customers…" />;
+  if (state.error || !state.data) return <ErrorState message={normaliseError(state.error).message} retry={state.refresh} />;
+  const { customers, currency, top_customer_share, top_five_share } = state.data;
+  const owing = customers.filter((c) => c.outstanding > 0).slice(0, 5);
+  if (!owing.length) return <p className="quiet">No customer owes anything right now.</p>;
+  return (
+    <>
+      <ol className="balance-list">
+        {owing.map((c) => (
+          <li key={c.customer_id ?? c.display_name}>
+            <div>
+              <Link to={`/invoices?status=OUTSTANDING&q=${encodeURIComponent(c.display_name)}`} title={c.display_name}>{c.display_name}</Link>
+              <span>
+                {c.overdue > 0 ? `${money(c.overdue, currency)} overdue · ` : ""}
+                {paymentRecord(c)}
+              </span>
+            </div>
+            <div>
+              <strong className="numeric">{money(c.outstanding, currency)}</strong>
+              <span>{Math.round(c.share_of_outstanding * 100)}% of total</span>
+            </div>
+          </li>
+        ))}
+      </ol>
+      <p className="quiet balance-note">
+        Largest customer is {Math.round(top_customer_share * 100)}% of outstanding
+        {state.data.customers_owing > 5 ? `; the top five are ${Math.round(top_five_share * 100)}%.` : "."}
+      </p>
+    </>
   );
 }

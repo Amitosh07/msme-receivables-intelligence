@@ -1,0 +1,15 @@
+**/__pycache__
+**/*.py[cod]
+.git
+.venv
+.pnpm-store
+.ruff_cache
+.pytest_cache
+.env
+.env.*
+data
+docs
+storage
+frontend
+backend/tests
+*.md

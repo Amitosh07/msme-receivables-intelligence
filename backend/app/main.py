@@ -5,12 +5,13 @@ Version 1 Backend Foundation
 
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api.router import api_router
-from backend.app.core.config import settings
+from backend.app.core.config import Settings, enforce_secure_configuration, settings
+from backend.app.core.rate_limit import GlobalRateLimitMiddleware
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,28 +29,34 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Shutting down %s", settings.APP_NAME)
 
 
-def create_app() -> FastAPI:
+def create_app(config: Optional[Settings] = None) -> FastAPI:
     """FastAPI application factory."""
+    config = config or settings
+    enforce_secure_configuration(config)
+    docs = config.api_docs_enabled
     application = FastAPI(
-        title=settings.APP_NAME,
-        version=settings.APP_VERSION,
+        title=config.APP_NAME,
+        version=config.APP_VERSION,
         description="AI/ML-powered Receivables Intelligence Platform for B2B MSMEs",
-        docs_url="/docs",
-        redoc_url="/redoc",
-        openapi_url="/openapi.json",
+        docs_url="/docs" if docs else None,
+        redoc_url="/redoc" if docs else None,
+        openapi_url="/openapi.json" if docs else None,
         lifespan=lifespan,
     )
 
-    # Configure CORS for local development and frontend integration
+    application.add_middleware(GlobalRateLimitMiddleware)
+    # Bearer tokens travel in the Authorization header, never cookies, so
+    # credentials are not allowed cross-origin.
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=config.cors_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+        expose_headers=["Retry-After"],
+        max_age=600,
     )
 
-    # Mount API routes
     application.include_router(api_router)
 
     return application

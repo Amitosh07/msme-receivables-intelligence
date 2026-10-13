@@ -274,6 +274,50 @@ class TestHistoricalWorkspace(unittest.TestCase):
         )
         self.assertEqual(cross_tenant.status_code, 404)
 
+    def test_manual_historical_invoice_uses_human_number_and_date(self):
+        customer = create_customer(
+            self.db, business_id=self.business_a_id, display_name="Human Number Workspace"
+        )
+        self.db.commit()
+        headers = {"Authorization": f"Bearer {self.token_a}"}
+        path = f"/historical/companies/{customer.id}/invoices/manual"
+        number = f"INV-{uuid.uuid4().hex[:6].upper()}"
+
+        named = self.client.post(
+            path,
+            json={
+                "amount": 1500,
+                "due_date": "2026-03-31",
+                "invoice_number": f"  {number}  ",
+                "invoice_date": "2026-03-01",
+            },
+            headers=headers,
+        )
+        self.assertEqual(named.status_code, 201)
+        self.assertEqual(named.json()["invoice_number"], number)
+        self.assertEqual(named.json()["invoice_date"], "2026-03-01")
+
+        duplicate = self.client.post(
+            path,
+            json={"amount": 10, "due_date": "2026-03-31", "invoice_number": number},
+            headers=headers,
+        )
+        self.assertEqual(duplicate.status_code, 422)
+        self.assertIn("already exists", duplicate.json()["detail"])
+
+        generated = self.client.post(
+            path, json={"amount": 10, "due_date": "2026-03-31"}, headers=headers
+        )
+        self.assertEqual(generated.status_code, 201)
+        self.assertRegex(generated.json()["invoice_number"], r"^MAN-[0-9A-F]{6}$")
+
+        backwards = self.client.post(
+            path,
+            json={"amount": 10, "due_date": "2026-03-01", "invoice_date": "2026-03-31"},
+            headers=headers,
+        )
+        self.assertEqual(backwards.status_code, 422)
+
     def test_manual_historical_invoice_duplicate_protection_and_eligibility(self):
         from backend.app.services.prediction_service import evaluate_prediction_eligibility
 
@@ -1877,9 +1921,9 @@ class TestHistoricalWorkspace(unittest.TestCase):
         inv_id = data["id"]
         inv_num = data["invoice_number"]
 
-        # Verify dynamic unique invoice number generated
+        # Verify a short human-readable invoice number was generated
         self.assertIsNotNone(inv_num)
-        self.assertTrue(len(inv_num) > 10)
+        self.assertRegex(inv_num, r"^MAN-[0-9A-F]{6}$")
         self.assertEqual(data["origin"], InvoiceOrigin.HISTORICAL.value)
         self.assertEqual(data["due_date"], "2025-09-30")
         self.assertEqual(data["payment_date"], "2025-09-25")

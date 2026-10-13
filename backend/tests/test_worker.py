@@ -380,6 +380,45 @@ class TestWorkerService(unittest.TestCase):
         self.assertEqual(inv_db.invoice_number, "INV-RECON-777")
         self.assertEqual(inv_db.payment_status, "PAID")
 
+    def test_partial_payment_reconciliation_on_parse_is_partial(self):
+        """A reconciled payment smaller than the invoice leaves it PARTIAL, not PAID."""
+        payment = Payment(
+            id=uuid.uuid4(),
+            business_id=self.business_a_id,
+            invoice_reference="INV-RECON-778",
+            amount=4000.00,
+            payment_date=datetime.now(timezone.utc),
+            reference="WIRE-9922",
+            invoice_id=None,
+            provenance="legacy",
+        )
+        self.db.add(payment)
+        self.db.commit()
+
+        invoice_text = (
+            "TAX INVOICE\n"
+            "Invoice #: INV-RECON-778\n"
+            "Bill To: Reconciled Partner Ltd\n"
+            "Date: 2025-05-10\n"
+            "Due Date: 2025-06-10\n"
+            "Total Amount: $9,800.00\n"
+        )
+        files = {"file": ("inv_recon_partial.pdf", io.BytesIO(_create_sample_pdf(invoice_text)), "application/pdf")}
+        res = self.client.post(
+            "/invoices/upload",
+            files=files,
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        self.assertEqual(res.status_code, 201)
+        doc = self.db.get(InvoiceDocument, uuid.UUID(res.json()["document_id"]))
+        self.uploaded_keys.append(doc.storage_key)
+
+        self.worker.process_one_task(timeout=1)
+
+        self.db.expire_all()
+        inv_db = self.db.get(Invoice, self.db.get(Payment, payment.id).invoice_id)
+        self.assertEqual(inv_db.payment_status, "PARTIAL")
+
     def test_permanent_parser_failure_on_blank_pdf(self):
         """Unparseable blank PDF permanently marks task FAILED and document ERROR (no endless retry)."""
         doc = fitz.open()

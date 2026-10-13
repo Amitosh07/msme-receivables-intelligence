@@ -35,6 +35,7 @@ from backend.app.services.customer_identity import (
     resolve_customer_identity,
     resolve_or_create_historical_customer,
 )
+from backend.app.services.manual_payment_service import derive_invoice_payment_status
 
 logger = logging.getLogger(__name__)
 
@@ -615,9 +616,10 @@ def _process_table(
         if persist:
             try:
                 for invoice_id in invoices_to_mark_paid:
-                    invoices_by_ref[
+                    invoice = invoices_by_ref[
                         _normalize_reference_for_invoice_match(invoice_number_by_id[invoice_id])
-                    ].payment_status = "PAID"
+                    ]
+                    invoice.payment_status = derive_invoice_payment_status(db, invoice)
                 db.commit()
             except Exception as exc:
                 db.rollback()

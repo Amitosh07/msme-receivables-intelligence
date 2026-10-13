@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.core.dependencies import TenantContext, get_db, get_tenant_context
+from backend.app.core.rate_limit import upload_limit
 from backend.app.models.customer import Customer
 from backend.app.models.invoice import Invoice, InvoiceOrigin
 from backend.app.schemas.historical import (
@@ -66,6 +67,7 @@ router = APIRouter(prefix="/historical", tags=["Historical Workspace"])
     response_model=InvoiceUploadResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Upload a historical invoice for automatic company discovery",
+    dependencies=[Depends(upload_limit)],
 )
 async def upload_historical_invoice(
     file: UploadFile = File(...),
@@ -327,6 +329,8 @@ def post_manual_historical_invoice(
             db, tenant_ctx.business_id, customer_id,
             amount=payload.amount, due_date=payload.due_date,
             payment_date=payload.payment_date,
+            invoice_number=payload.invoice_number,
+            invoice_date=payload.invoice_date,
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -350,6 +354,7 @@ def post_manual_historical_invoice(
     response_model=InvoiceUploadResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Upload a historical invoice PDF for a specific company",
+    dependencies=[Depends(upload_limit)],
 )
 async def upload_company_historical_invoice(
     customer_id: uuid.UUID,
@@ -491,6 +496,7 @@ def record_company_historical_payment(
     response_model=PaymentImportResponse,
     status_code=status.HTTP_200_OK,
     summary="Import historical payment data from CSV or XLSX within company workspace",
+    dependencies=[Depends(upload_limit)],
 )
 async def import_company_historical_payments(
     customer_id: uuid.UUID,
@@ -539,6 +545,7 @@ async def import_company_historical_payments(
     response_model=PaymentImportResponse,
     status_code=status.HTTP_200_OK,
     summary="Preview historical payment data from CSV or XLSX within company workspace",
+    dependencies=[Depends(upload_limit)],
 )
 async def preview_company_historical_payments(
     customer_id: uuid.UUID,

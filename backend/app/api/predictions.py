@@ -11,10 +11,17 @@ from sqlalchemy.orm import Session
 from backend.app.core.dependencies import TenantContext, get_tenant_context
 from backend.app.db.session import get_db
 from backend.app.schemas.prediction import (
+    ModelInsightsResponse,
+    PredictionExplanationResponse,
     PredictionListResponse,
     PredictionOperationResponse,
     PredictionResponse,
     PredictionUnavailableResponse,
+)
+from backend.app.services.explanation_service import (
+    ExplanationUnavailableError,
+    explain_invoice_prediction,
+    get_model_insights,
 )
 from backend.app.services.prediction_service import (
     INSUFFICIENT_HISTORY_REASON,
@@ -71,6 +78,35 @@ def get_invoice_prediction(
             detail="Prediction not found for the requested invoice.",
         )
     return PredictionResponse.model_validate(pred)
+
+
+@router.get(
+    "/invoices/{invoice_id}/prediction/explanation",
+    response_model=PredictionExplanationResponse,
+    summary="Explain the drivers of an invoice's late-payment estimate",
+)
+def get_invoice_prediction_explanation(
+    invoice_id: uuid.UUID,
+    tenant_ctx: TenantContext = Depends(get_tenant_context),
+    db: Session = Depends(get_db),
+) -> PredictionExplanationResponse:
+    try:
+        return explain_invoice_prediction(db, tenant_ctx.business_id, invoice_id)
+    except InvoiceNotReadyError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except (ExplanationUnavailableError, PredictionServiceError) as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.get(
+    "/predictions/model-insights",
+    response_model=ModelInsightsResponse,
+    summary="Overall feature importance, test metrics and limitations of the V1 models",
+)
+def get_prediction_model_insights(
+    tenant_ctx: TenantContext = Depends(get_tenant_context),
+) -> ModelInsightsResponse:
+    return get_model_insights()
 
 
 @router.post(

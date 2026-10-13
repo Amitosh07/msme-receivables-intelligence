@@ -1,16 +1,19 @@
+import type { ReactNode } from "react";
 import { ArrowUpDown, ChevronLeft, ChevronRight, Search } from "./Icons";
 import { Link, useNavigate } from "react-router-dom";
-import type { Invoice, Prediction } from "../lib/types";
-import { date, money, titleCase } from "../lib/format";
+import type { InvoiceListItem, InvoiceSort } from "../lib/types";
+import { date, invoiceLabel, money } from "../lib/format";
+import { dueLabel, isOutstanding } from "../lib/aging";
 import { RiskBadge, StatusBadge } from "./Badges";
-type Props = { invoices: Invoice[]; predictions: Prediction[]; page: number; pageSize: number; total: number; onPage: (page: number) => void; query: string; setQuery: (value: string) => void; status: string; setStatus: (value: string) => void; risk: string; setRisk: (value: string) => void; sort: "due_date" | "amount" | "invoice_date" | "uploaded"; setSort: (value: "due_date" | "amount" | "invoice_date" | "uploaded") => void; direction: "asc" | "desc"; setDirection: (value: "asc" | "desc") => void };
+type Props = { invoices: InvoiceListItem[]; page: number; pageSize: number; total: number; onPage: (page: number) => void; busy?: boolean; empty?: ReactNode; query: string; setQuery: (value: string) => void; status: string; setStatus: (value: string) => void; risk: string; setRisk: (value: string) => void; sort: InvoiceSort; setSort: (value: InvoiceSort) => void; direction: "asc" | "desc"; setDirection: (value: "asc" | "desc") => void };
 export function InvoiceTable({
   invoices = [],
-  predictions = [],
   page,
   pageSize,
   total,
   onPage,
+  busy = false,
+  empty,
   query,
   setQuery,
   status,
@@ -23,11 +26,10 @@ export function InvoiceTable({
   setDirection,
 }: Props) {
   const navigate = useNavigate();
-  const predictionByInvoice = new Map((predictions || []).map((p) => [p.invoice_id, p]));
   const pages = Math.max(1, Math.ceil(total / pageSize));
 
   return (
-    <section className="table-section">
+    <section className={`table-section${busy ? " busy" : ""}`} aria-busy={busy}>
       <div className="table-controls">
         <label className="search">
           <Search size={17} />
@@ -37,7 +39,7 @@ export function InvoiceTable({
               setQuery(e.target.value);
               onPage(1);
             }}
-            placeholder="Search invoice number"
+            placeholder="Search invoice or customer"
             aria-label="Search invoices"
           />
         </label>
@@ -50,7 +52,9 @@ export function InvoiceTable({
           aria-label="Filter payment status"
         >
           <option value="">All payment states</option>
-          <option value="OPEN">Outstanding</option>
+          <option value="OUTSTANDING">Outstanding (unpaid + partial)</option>
+          <option value="OPEN">Unpaid</option>
+          <option value="PARTIAL">Partially paid</option>
           <option value="PAID">Paid</option>
         </select>
         <select
@@ -84,18 +88,23 @@ export function InvoiceTable({
           <button
             className="direction"
             type="button"
-            onClick={() => setDirection(direction === "desc" ? "asc" : "desc")}
+            onClick={() => {
+              setDirection(direction === "desc" ? "asc" : "desc");
+              onPage(1);
+            }}
             aria-label={direction === "desc" ? "Sort descending" : "Sort ascending"}
           >
             <ArrowUpDown size={14} />
           </button>
         </label>
       </div>
+      {!invoices.length && !busy && empty ? empty : (
       <div className="table-wrap">
         <table>
           <thead>
             <tr>
               <th>Invoice</th>
+              <th>Customer</th>
               <th>Amount</th>
               <th>Issued</th>
               <th>Due</th>
@@ -107,16 +116,18 @@ export function InvoiceTable({
           </thead>
           <tbody>
             {(invoices || []).map((invoice) => {
-              const prediction = predictionByInvoice.get(invoice.id);
+              const prediction = invoice.prediction;
               const open = () => navigate(`/invoices/${invoice.id}`);
-              const invoiceDisplay = invoice.invoice_number || "—";
+              const invoiceDisplay = invoiceLabel(invoice.invoice_number);
+              const partial = invoice.payment_status === "PARTIAL" && invoice.outstanding_balance !== undefined;
+              const dueNote = isOutstanding(invoice.payment_status) ? dueLabel(invoice.due_date) : null;
               return (
                 <tr
                   key={invoice.id}
                   className="invoice-row"
                   role="link"
                   tabIndex={0}
-                  aria-label={`Open invoice ${invoiceDisplay}`}
+                  aria-label={`Open invoice ${invoiceDisplay}${invoice.customer_name ? ` for ${invoice.customer_name}` : ""}`}
                   onClick={open}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
@@ -134,9 +145,16 @@ export function InvoiceTable({
                       {invoiceDisplay}
                     </Link>
                   </td>
-                  <td className="numeric">{money(invoice.amount, invoice.currency)}</td>
+                  <td>{invoice.customer_name || <span className="muted">Not identified</span>}</td>
+                  <td className="numeric">
+                    {money(invoice.amount, invoice.currency)}
+                    {partial && <small className="cell-note">{money(invoice.outstanding_balance, invoice.currency)} left</small>}
+                  </td>
                   <td>{date(invoice.invoice_date)}</td>
-                  <td>{date(invoice.due_date)}</td>
+                  <td>
+                    {date(invoice.due_date)}
+                    {dueNote && <small className={`cell-note${dueNote.endsWith("overdue") ? " overdue" : ""}`}>{dueNote}</small>}
+                  </td>
                   <td>
                     <StatusBadge value={invoice.payment_status || "OPEN"} />
                   </td>
@@ -166,6 +184,7 @@ export function InvoiceTable({
           </tbody>
         </table>
       </div>
+      )}
       <footer className="pagination">
         <span>
           {total} invoice{total === 1 ? "" : "s"}

@@ -1,9 +1,11 @@
 import { CheckCircle2, FileText, UploadCloud } from "../components/Icons";
 import { ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { invoicesApi, normaliseError } from "../lib/api";
 import type { InvoiceDocument } from "../lib/types";
 import { StatusBadge } from "../components/Badges";
 import { date } from "../lib/format";
+import { notifyDataChanged } from "../lib/events";
 
 type UploadStatus = "idle" | "uploading" | "success" | "error";
 const ACTIVE = new Set(["PENDING", "PROCESSING"]);
@@ -27,7 +29,7 @@ export function UploadPage() {
     previousStatuses.current = new Map(next.map((doc) => [doc.id, doc.processing_status]));
     setDocuments(next);
     setDocumentError("");
-    if (completed) window.dispatchEvent(new Event("msme:data-changed"));
+    if (completed) notifyDataChanged();
     return next;
   }, []);
 
@@ -79,14 +81,19 @@ export function UploadPage() {
   };
 
   return <>
-    <section className="page-heading">
-      <div>
-        <p className="eyebrow">Data intake</p>
-        <h2>Import invoices</h2>
-      </div>
+    <section className="intake-note">
+      <p>
+        <b>For invoices you are still collecting.</b> Once processed they appear in Invoices and count toward
+        Outstanding, Overdue and Due soon on the Overview.
+      </p>
+      <p>
+        Adding past, already-settled invoices or payment history so the model can learn how each customer pays?
+        Use <Link to="/historical">Historical Data</Link> instead — those records are never counted as money to collect.
+      </p>
     </section>
     <div className="upload-grid" style={{ gridTemplateColumns: "1fr" }}>
-      <UploadCard icon={FileText} title="Invoice PDF" note="Upload a PDF file.">
+      <UploadCard icon={FileText} title="Current invoice PDF" note="Customer, invoice number, amount and dates are read from the PDF; anything unclear is flagged for review.">
+
         <input id="invoice-file" className="file-input" type="file" accept="application/pdf,.pdf" onChange={pickInvoice} />
         <label htmlFor="invoice-file" className="dropzone">
           <UploadCloud size={25} />

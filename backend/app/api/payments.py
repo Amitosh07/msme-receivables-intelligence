@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from backend.app.core.dependencies import TenantContext, get_db, get_tenant_context
+from backend.app.core.rate_limit import upload_limit
 from backend.app.schemas.payment import PaymentImportResponse
 from backend.app.services.payment_import_service import import_payments_file, preview_payments_file
 
@@ -15,6 +16,7 @@ router = APIRouter(prefix="/payments", tags=["Payments"])
     response_model=PaymentImportResponse,
     status_code=status.HTTP_200_OK,
     summary="Import historical payment data from CSV or XLSX",
+    dependencies=[Depends(upload_limit)],
 )
 async def import_payments(
     file: UploadFile = File(..., description="Historical payment CSV or XLSX file"),
@@ -50,6 +52,7 @@ async def import_payments(
     response_model=PaymentImportResponse,
     status_code=status.HTTP_200_OK,
     summary="Validate and preview payment-history CSV/XLSX without persisting it",
+    dependencies=[Depends(upload_limit)],
 )
 async def preview_payments(
     file: UploadFile = File(..., description="Historical payment CSV or XLSX file"),

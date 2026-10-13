@@ -10,7 +10,7 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+/lib/
 lib64/
 parts/
 sdist/
@@ -69,6 +69,6 @@ ml_models/
 backend/ml/models/
 
 # Document & Object Storage
-storage/
+/storage/
 uploads/
 

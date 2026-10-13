@@ -15,7 +15,10 @@ import {
 } from "../components/Icons";
 import { StatusBadge } from "../components/Badges";
 import { historicalApi, normaliseError } from "../lib/api";
-import { date, money } from "../lib/format";
+import { date, invoiceLabel, money } from "../lib/format";
+import { notifyDataChanged } from "../lib/events";
+import { todayISO } from "../lib/aging";
+import { sumMoney } from "../lib/totals";
 import type {
   HistoricalCompanyDetail,
   HistoricalCompanySummary,
@@ -85,17 +88,20 @@ function HistoricalCompanyListView() {
   const stats = useMemo(() => {
     const totalCompanies = allCompanies.length;
     const totalInvoices = allCompanies.reduce((sum, c) => sum + c.historical_invoice_count, 0);
-    const totalReceivables = allCompanies.reduce((sum, c) => sum + c.total_amount, 0);
-    const totalSettled = allCompanies.reduce((sum, c) => sum + c.total_paid, 0);
+    const totalReceivables = sumMoney(allCompanies.map((c) => c.total_amount));
+    const totalSettled = sumMoney(allCompanies.map((c) => c.total_paid));
     return { totalCompanies, totalInvoices, totalReceivables, totalSettled };
   }, [allCompanies]);
 
   return (
     <>
-      <section className="page-heading">
+      <section className="page-heading historical-intro">
         <div>
-          <p className="eyebrow">HISTORICAL DATA</p>
-          <h2>Historical company workspace</h2>
+          <p>
+            Past invoices and payments for each customer. They teach the model how a customer pays and are{" "}
+            <b>never counted</b> in Outstanding, Overdue or Due soon. To add an invoice you are still collecting, use{" "}
+            <Link to="/upload">Upload invoices</Link>.
+          </p>
         </div>
         <div className="workspace-actions">
           <button className="button" onClick={() => setShowUploadInvoiceModal(true)}>
@@ -123,15 +129,15 @@ function HistoricalCompanyListView() {
         </div>
         <div className="metric">
           <FileSpreadsheet size={22} />
-          <span>RECEIVABLES TRACKED</span>
+          <span>HISTORICAL INVOICED</span>
           <strong>{money(stats.totalReceivables, "INR")}</strong>
-          <small>Cumulative historical volume</small>
+          <small>Face value of past invoices</small>
         </div>
         <div className="metric">
           <CheckCircle2 size={22} />
-          <span>SETTLED REVENUE</span>
+          <span>HISTORICAL PAID</span>
           <strong>{money(stats.totalSettled, "INR")}</strong>
-          <small>Recorded historical payments</small>
+          <small>Payments recorded against them</small>
         </div>
       </div>
 
@@ -287,6 +293,7 @@ function HistoricalCompanyListView() {
           onClose={() => setShowUploadInvoiceModal(false)}
           onSuccess={() => {
             setShowUploadInvoiceModal(false);
+            notifyDataChanged();
             void loadCompanies("");
           }}
         />
@@ -298,6 +305,7 @@ function HistoricalCompanyListView() {
           onClose={() => setSelectedReview(null)}
           onSuccess={() => {
             setSelectedReview(null);
+            notifyDataChanged();
             void loadCompanies(debouncedSearch);
           }}
         />
@@ -460,6 +468,7 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
     setDeleteError(null);
     try {
       await historicalApi.deleteCompany(companyId);
+      notifyDataChanged();
       navigate("/historical");
     } catch (err) {
       setDeleteError(normaliseError(err).message);
@@ -525,28 +534,31 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
       </Link>
 
       <section className="historical-topbar">
-        <div>
-          <p className="eyebrow">COMPANY WORKSPACE</p>
-          <h2 style={{ fontSize: 26, margin: 0 }}>{detail.display_name}</h2>
-          <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
-            <span className="badge">Normalized: {detail.normalized_name}</span>
+        <div className="historical-identity">
+          <p className="eyebrow">Historical payment record</p>
+          <h2>{detail.display_name}</h2>
+          <div className="historical-meta">
             {detail.gstin && <span className="badge">GSTIN: {detail.gstin}</span>}
+            {detail.customer_ref && <span className="badge">Ref: {detail.customer_ref}</span>}
             <button className="text-button" onClick={() => setShowGstinModal(true)}>
               {detail.gstin ? "Edit GSTIN" : "Add GSTIN"}
             </button>
-            {detail.customer_ref && <span className="badge">Ref: {detail.customer_ref}</span>}
+            <button
+              className="text-button danger"
+              onClick={() => setShowDeleteModal(true)}
+              title="Delete this company and its historical records"
+            >
+              Delete company
+            </button>
           </div>
         </div>
 
-        <div className="workspace-actions">
+        <div className="workspace-actions" role="toolbar" aria-label="Historical record actions">
           <button className="button" onClick={() => setShowManualInvoiceModal(true)}>
-            <Plus size={16} /> Add historical invoice manually
+            <Plus size={16} /> Add invoice
           </button>
-          <button
-            className="button"
-            onClick={() => setShowUploadInvoiceModal(true)}
-          >
-            <UploadCloud size={16} /> Upload historical invoice
+          <button className="button" onClick={() => setShowUploadInvoiceModal(true)}>
+            <UploadCloud size={16} /> Upload PDF
           </button>
           <button
             className="button"
@@ -557,21 +569,10 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
             disabled={detail.invoices.length === 0}
             title={detail.invoices.length === 0 ? "Add an invoice first" : undefined}
           >
-            <CalendarClock size={16} /> Add payment manually
+            <CalendarClock size={16} /> Record payment
           </button>
-          <button
-            className="button primary"
-            onClick={() => setShowImportPaymentModal(true)}
-          >
-            <UploadCloud size={16} /> Import payment history
-          </button>
-          <button
-            className="button"
-            onClick={() => setShowDeleteModal(true)}
-            style={{ color: "#a94e2d", borderColor: "#ebcfb7" }}
-            title="Delete this company workspace"
-          >
-            <X size={16} /> Delete company
+          <button className="button primary" onClick={() => setShowImportPaymentModal(true)}>
+            <FileSpreadsheet size={16} /> Import payments
           </button>
         </div>
       </section>
@@ -586,9 +587,9 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
         </div>
         <div className="metric">
           <FileSpreadsheet size={20} />
-          <span>TOTAL RECEIVABLES</span>
+          <span>HISTORICAL INVOICED</span>
           <strong>{money(detail.total_amount, "INR")}</strong>
-          <small>Cumulative invoiced value</small>
+          <small>Total value of past invoices</small>
         </div>
         <div className="metric">
           <CheckCircle2 size={20} />
@@ -598,9 +599,9 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
         </div>
         <div className={`metric ${detail.outstanding_balance > 0 ? "urgent" : ""}`}>
           <CalendarClock size={20} />
-          <span>OUTSTANDING BALANCE</span>
+          <span>UNSETTLED IN RECORD</span>
           <strong>{money(detail.outstanding_balance, "INR")}</strong>
-          <small>Unsettled past amount</small>
+          <small>No payment recorded yet · not counted in Overview</small>
         </div>
       </div>
 
@@ -653,7 +654,7 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
                 {detail.invoices.map((inv) => (
                   <tr key={inv.id}>
                     <td>
-                      <strong className="invoice-link">{inv.invoice_number || "—"}</strong>
+                      <strong className="invoice-link">{invoiceLabel(inv.invoice_number)}</strong>
                     </td>
                     <td>{date(inv.invoice_date)}</td>
                     <td>
@@ -712,6 +713,7 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
           onClose={() => setShowUploadInvoiceModal(false)}
           onSuccess={() => {
             setShowUploadInvoiceModal(false);
+            notifyDataChanged();
             void loadDetail();
           }}
         />
@@ -722,6 +724,7 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
           onClose={() => setShowManualInvoiceModal(false)}
           onSuccess={() => {
             setShowManualInvoiceModal(false);
+            notifyDataChanged();
             void loadDetail();
           }}
         />
@@ -739,6 +742,7 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
           onSuccess={() => {
             setShowManualPaymentModal(false);
             setSelectedInvoice(null);
+            notifyDataChanged();
             void loadDetail();
           }}
         />
@@ -751,6 +755,7 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
           onClose={() => setShowImportPaymentModal(false)}
           onSuccess={() => {
             setShowImportPaymentModal(false);
+            notifyDataChanged();
             void loadDetail();
           }}
         />
@@ -761,6 +766,7 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
           onClose={() => setDueDateInvoice(null)}
           onSuccess={() => {
             setDueDateInvoice(null);
+            notifyDataChanged();
             void loadDetail();
           }}
         />
@@ -772,6 +778,7 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
           onClose={() => setChangeCompanyInvoice(null)}
           onSuccess={() => {
             setChangeCompanyInvoice(null);
+            notifyDataChanged();
             void loadDetail();
           }}
         />
@@ -783,6 +790,7 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
           onClose={() => setShowGstinModal(false)}
           onSuccess={() => {
             setShowGstinModal(false);
+            notifyDataChanged();
             void loadDetail();
           }}
         />
@@ -874,7 +882,7 @@ function ChangeHistoricalInvoiceCompanyModal({
         <form onSubmit={handleSubmit}>
           <div className="modal-body">
             <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: "#485550" }}>
-              Reassign invoice <strong>{invoice.invoice_number || "without number"}</strong> ({money(invoice.amount, invoice.currency)}) from <strong>{currentCompanyName}</strong> to another company.
+              Reassign invoice <strong>{invoice.invoice_number ? invoiceLabel(invoice.invoice_number) : "without number"}</strong> ({money(invoice.amount, invoice.currency)}) from <strong>{currentCompanyName}</strong> to another company.
             </p>
 
             <div className="form-field">
@@ -1233,6 +1241,8 @@ function ManualHistoricalInvoiceModal({
   onClose: () => void;
   onSuccess: () => void;
 }) {
+  const [invoiceNumber, setInvoiceNumber] = useState("");
+  const [invoiceDate, setInvoiceDate] = useState("");
   const [amount, setAmount] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [paymentDate, setPaymentDate] = useState("");
@@ -1240,6 +1250,10 @@ function ManualHistoricalInvoiceModal({
   const [error, setError] = useState<string | null>(null);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
+    if (invoiceDate && dueDate && invoiceDate > dueDate) {
+      setError("Invoice date cannot be after the due date.");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -1247,6 +1261,8 @@ function ManualHistoricalInvoiceModal({
         amount: Number(amount),
         due_date: dueDate,
         payment_date: paymentDate || undefined,
+        invoice_number: invoiceNumber.trim() || undefined,
+        invoice_date: invoiceDate || undefined,
       });
       onSuccess();
     } catch (err) {
@@ -1258,12 +1274,14 @@ function ManualHistoricalInvoiceModal({
     <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true">
       <div className="modal-box" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
-          <h3>Add Historical Invoice Manually</h3>
+          <h3>Add historical invoice</h3>
           <button className="icon-button" onClick={onClose} aria-label="Close modal"><X size={18} /></button>
         </div>
         <form onSubmit={submit}>
           <div className="modal-body">
-            <p>The selected company is used automatically. An invoice reference will be generated by the system.</p>
+            <p>The selected company is used automatically. Enter the number printed on the invoice so it can be matched to payments later; if you leave it blank a short reference such as MAN-3F9A2C is generated.</p>
+            <div className="form-field"><label htmlFor="manual-history-number">Invoice number (recommended)</label><input id="manual-history-number" type="text" maxLength={64} placeholder="e.g. INV-2026-014" value={invoiceNumber} onChange={(event) => setInvoiceNumber(event.target.value)} /></div>
+            <div className="form-field"><label htmlFor="manual-history-date">Invoice date (recommended)</label><input id="manual-history-date" type="date" value={invoiceDate} max={dueDate || undefined} onChange={(event) => setInvoiceDate(event.target.value)} /></div>
             <div className="form-field"><label htmlFor="manual-history-amount">Amount</label><input id="manual-history-amount" type="number" min="0.01" step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} required /></div>
             <div className="form-field"><label htmlFor="manual-history-due">Due Date</label><input id="manual-history-due" type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} required /></div>
             <div className="form-field"><label htmlFor="manual-history-payment">Payment Date (optional)</label><input id="manual-history-payment" type="date" value={paymentDate} onChange={(event) => setPaymentDate(event.target.value)} /></div>
@@ -1305,9 +1323,7 @@ function ManualPaymentModal({
     [invoices, selectedId]
   );
 
-  const [paymentDate, setPaymentDate] = useState<string>(
-    new Date().toISOString().slice(0, 10)
-  );
+  const [paymentDate, setPaymentDate] = useState<string>(() => todayISO());
   const [amount, setAmount] = useState<string>(() => {
     const target = invoices.find((inv) => inv.id === (initialInvoiceId || invoices[0]?.id));
     if (!target) return "";
@@ -1390,7 +1406,7 @@ function ManualPaymentModal({
                 >
                   {invoices.map((inv) => (
                     <option key={inv.id} value={inv.id}>
-                      Invoice #{inv.invoice_number || "Unnumbered"} — Total: {money(inv.amount, inv.currency)} (Bal:{" "}
+                      Invoice #{inv.invoice_number ? invoiceLabel(inv.invoice_number) : "Unnumbered"} — Total: {money(inv.amount, inv.currency)} (Bal:{" "}
                       {money(inv.outstanding_balance, inv.currency)}) [{inv.payment_status || "OPEN"}]
                     </option>
                   ))}

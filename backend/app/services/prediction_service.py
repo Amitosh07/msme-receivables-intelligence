@@ -209,6 +209,99 @@ def evaluate_prediction_eligibility(
     )
 
 
+def eligible_history_counts(
+    db: Session,
+    business_id: uuid.UUID,
+    invoices: List[Invoice],
+) -> Dict[uuid.UUID, int]:
+    """Batched equivalent of evaluate_prediction_eligibility for many invoices.
+
+    Loads every candidate payment for the invoices' customers in one query and
+    replays the same completed-outcome rule per invoice in memory.
+    """
+    counts: Dict[uuid.UUID, int] = {invoice.id: 0 for invoice in invoices}
+    targets = [
+        invoice for invoice in invoices
+        if invoice.business_id == business_id and invoice.customer_id is not None and invoice.invoice_date is not None
+    ]
+    if not targets:
+        return counts
+
+    pay_day = func.cast(Payment.payment_date, Date)
+    rows = db.execute(
+        select(
+            Payment.invoice_id,
+            Payment.amount,
+            pay_day.label("pay_day"),
+            Invoice.customer_id,
+            Invoice.invoice_date,
+            Invoice.due_date,
+            Invoice.amount.label("invoice_amount"),
+        )
+        .join(Invoice, Payment.invoice_id == Invoice.id)
+        .where(
+            Payment.business_id == business_id,
+            Payment.provenance.in_(ELIGIBLE_PAYMENT_PROVENANCE),
+            Payment.amount > 0,
+            Invoice.business_id == business_id,
+            Invoice.customer_id.in_({t.customer_id for t in targets}),
+            Invoice.origin.in_([InvoiceOrigin.HISTORICAL.value, InvoiceOrigin.CURRENT.value]),
+            Invoice.due_date.is_not(None),
+            pay_day < max(t.invoice_date for t in targets),
+        )
+        .order_by(Payment.payment_date.asc(), Payment.id.asc())
+    ).all()
+
+    by_customer: Dict[uuid.UUID, list] = {}
+    for row in rows:
+        by_customer.setdefault(row.customer_id, []).append(row)
+
+    for target in targets:
+        as_of = target.invoice_date
+        paid: Dict[uuid.UUID, float] = {}
+        completed: set[uuid.UUID] = set()
+        for row in by_customer.get(target.customer_id, ()):
+            if row.invoice_id == target.id or row.invoice_id in completed or row.pay_day >= as_of:
+                continue
+            issued_before = (
+                row.invoice_date < as_of if row.invoice_date is not None else row.due_date < as_of
+            )
+            if not issued_before:
+                continue
+            paid[row.invoice_id] = paid.get(row.invoice_id, 0.0) + float(row.amount)
+            if paid[row.invoice_id] >= float(row.invoice_amount):
+                completed.add(row.invoice_id)
+        counts[target.id] = len(completed)
+    return counts
+
+
+def eligible_predictions(
+    db: Session,
+    business_id: uuid.UUID,
+    invoice_ids: Optional[List[uuid.UUID]] = None,
+) -> Dict[uuid.UUID, PredictionResult]:
+    """Stored predictions that pass the history gate, keyed by invoice id.
+
+    With invoice_ids=None every prediction of the tenant is considered.
+    """
+    query = (
+        select(PredictionResult, Invoice)
+        .join(Invoice, PredictionResult.invoice_id == Invoice.id)
+        .where(PredictionResult.business_id == business_id, Invoice.business_id == business_id)
+    )
+    if invoice_ids is not None:
+        if not invoice_ids:
+            return {}
+        query = query.where(PredictionResult.invoice_id.in_(invoice_ids))
+    pairs = db.execute(query).all()
+    counts = eligible_history_counts(db, business_id, [invoice for _, invoice in pairs])
+    return {
+        prediction.invoice_id: prediction
+        for prediction, invoice in pairs
+        if counts.get(invoice.id, 0) >= MIN_CUSTOMER_HISTORY_FOR_PREDICTION
+    }
+
+
 def get_prediction_eligibility(
     db: Session,
     business_id: uuid.UUID,
@@ -527,10 +620,11 @@ def list_predictions_for_tenant(
             query.order_by(PredictionResult.created_at.desc())
         ).all()
     )
+    counts = eligible_history_counts(db, business_id, [p.invoice for p in persisted_results])
     eligible_results = [
         prediction
         for prediction in persisted_results
-        if evaluate_prediction_eligibility(db, prediction.invoice).prediction_available
+        if counts.get(prediction.invoice_id, 0) >= MIN_CUSTOMER_HISTORY_FOR_PREDICTION
     ]
     total = len(eligible_results)
     return eligible_results[skip : skip + limit], total

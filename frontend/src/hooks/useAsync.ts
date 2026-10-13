@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { onDataChanged } from "../lib/events";
 export function useAsync<T>(loader: () => Promise<T>, deps: unknown[] = []) {
   const [data, setData] = useState<T>();
   const [error, setError] = useState<unknown>();
@@ -13,5 +14,6 @@ export function useAsync<T>(loader: () => Promise<T>, deps: unknown[] = []) {
     finally { if (requestId === request.current && showLoading) setLoading(false); }
   }, deps);
   useEffect(() => { void refresh(); return () => { request.current += 1; }; }, [refresh]);
+  useEffect(() => onDataChanged(() => { void refresh(false); }), [refresh]);
   return { data, error, loading, refresh };
 }

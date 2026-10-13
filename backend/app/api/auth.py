@@ -2,10 +2,16 @@
 Authentication API endpoints.
 """
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from backend.app.core.dependencies import TenantContext, get_db, get_tenant_context
+from backend.app.core.rate_limit import (
+    check_login_account,
+    login_ip_limit,
+    record_failed_login,
+    register_ip_limit,
+)
 from backend.app.schemas.auth import LoginRequest, RegisterRequest, RegisterResponse, TokenResponse
 from backend.app.schemas.business import BusinessResponse
 from backend.app.schemas.user import CurrentUserResponse, UserResponse
@@ -19,6 +25,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
     response_model=RegisterResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Register a new business tenant and user account",
+    dependencies=[Depends(register_ip_limit)],
 )
 def register(
     payload: RegisterRequest,
@@ -48,6 +55,7 @@ def register(
     "/login",
     response_model=TokenResponse,
     summary="Log in and retrieve a JWT access token",
+    dependencies=[Depends(login_ip_limit)],
 )
 def login(
     payload: LoginRequest,
@@ -57,11 +65,17 @@ def login(
     Authenticates a user via email and password, returning a signed JWT access token.
     The client must provide this token in the 'Authorization: Bearer <token>' header.
     """
-    user, business, token = authenticate_user(
-        db=db,
-        email=payload.email,
-        password=payload.password,
-    )
+    check_login_account(payload.email)
+    try:
+        user, business, token = authenticate_user(
+            db=db,
+            email=payload.email,
+            password=payload.password,
+        )
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+            record_failed_login(payload.email)
+        raise
     return TokenResponse(
         access_token=token,
         token_type="bearer",

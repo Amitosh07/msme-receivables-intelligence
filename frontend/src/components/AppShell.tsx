@@ -1,4 +1,4 @@
-import { LayoutDashboard, ReceiptText, Upload, CalendarClock, LogOut, Menu, X } from "./Icons";
+import { LayoutDashboard, ReceiptText, Upload, CalendarClock, LogOut, Menu, Sparkles, Users, X } from "./Icons";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useState } from "react";
 import { useAuth } from "../features/auth";
@@ -6,8 +6,10 @@ import { ErrorBoundary } from "./ErrorBoundary";
 const links = [
   { to: "/", label: "Overview", icon: LayoutDashboard },
   { to: "/invoices", label: "Invoices", icon: ReceiptText },
-  { to: "/upload", label: "Import", icon: Upload },
+  { to: "/customers", label: "Customers", icon: Users },
+  { to: "/upload", label: "Upload invoices", icon: Upload },
   { to: "/historical", label: "Historical Data", icon: CalendarClock },
+  { to: "/demo", label: "Guided demo", icon: Sparkles },
 ];
 export function AppShell() {
   const { user, logout } = useAuth();
@@ -50,7 +52,7 @@ export function AppShell() {
             <p className="eyebrow">{user?.business_name}</p>
             <h1>{title}</h1>
           </div>
-          <Link to="/upload" className="button primary">Upload files</Link>
+          {location.pathname !== "/upload" && <Link to="/upload" className="button primary">Upload invoice</Link>}
         </header>
         <div className="content"><ErrorBoundary><Outlet /></ErrorBoundary></div>
       </main>

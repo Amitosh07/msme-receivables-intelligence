@@ -13,8 +13,9 @@ from backend.app.core.dependencies import (
 )
 from backend.app.models.customer import Customer
 from backend.app.models.payment import Payment
-from backend.app.schemas.customer import CustomerCreate, CustomerResponse
+from backend.app.schemas.customer import CustomerBalancesResponse, CustomerCreate, CustomerResponse
 from backend.app.schemas.payment import PaymentResponse
+from backend.app.services.customer_balance_service import list_customer_balances
 from backend.app.services.customer_identity import create_customer
 
 router = APIRouter(prefix="/customers", tags=["Customers"])
@@ -60,6 +61,15 @@ def list_customers(
         .limit(limit)
     ).all()
     return [CustomerResponse.model_validate(customer) for customer in customers]
+
+
+@router.get("/balances", response_model=CustomerBalancesResponse)
+def get_customer_balances(
+    tenant_ctx: TenantContext = Depends(get_tenant_context),
+    db: Session = Depends(get_db),
+) -> CustomerBalancesResponse:
+    """Remaining balance, overdue amount and payment record for each customer."""
+    return list_customer_balances(db, tenant_ctx.business_id)
 
 
 @router.get("/{customer_id}", response_model=CustomerResponse)

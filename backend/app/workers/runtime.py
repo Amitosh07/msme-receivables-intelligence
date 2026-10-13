@@ -14,7 +14,7 @@ from typing import Any, Optional
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
-from backend.app.core.config import settings
+from backend.app.core.config import enforce_secure_configuration, redact_url, settings
 from backend.app.db.session import SessionLocal
 from backend.app.models.invoice_document import InvoiceDocument
 from backend.app.services.parser import PermanentParserError, TransientParserError
@@ -202,11 +202,12 @@ class WorkerService:
 
     def run(self) -> None:
         """Main worker execution loop."""
+        enforce_secure_configuration(settings)
         self.running = True
         self.setup_signal_handlers()
 
         logger.info("Starting MSME Receivables Worker Service v1.0...")
-        logger.info("Connecting to Redis at: %s", self.queue.redis_url)
+        logger.info("Connecting to Redis at: %s", redact_url(self.queue.redis_url))
 
         # Startup recovery
         db: Session = SessionLocal()

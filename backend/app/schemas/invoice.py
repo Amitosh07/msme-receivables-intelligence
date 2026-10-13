@@ -7,6 +7,7 @@ from datetime import date, datetime
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict
 from backend.app.schemas.payment import PaymentResponse
+from backend.app.schemas.prediction import PredictionResponse
 
 
 class InvoiceUploadResponse(BaseModel):
@@ -45,6 +46,7 @@ class InvoiceResponse(BaseModel):
     business_id: uuid.UUID
     customer_id: Optional[uuid.UUID] = None
     unresolved_customer_name: Optional[str] = None
+    customer_name: Optional[str] = None
     invoice_number: Optional[str] = None
     invoice_date: Optional[date] = None
     due_date: Optional[date] = None
@@ -55,15 +57,22 @@ class InvoiceResponse(BaseModel):
     processing_status: str
     origin: str = "CURRENT"
     document_id: Optional[uuid.UUID] = None
+    total_paid: Optional[float] = None
+    outstanding_balance: Optional[float] = None
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 
 
+class InvoiceListItem(InvoiceResponse):
+    """Invoice row with its estimate, present only when it passes the history gate."""
+    prediction: Optional[PredictionResponse] = None
+
+
 class InvoiceListResponse(BaseModel):
-    """Paginated list of invoices for a tenant."""
-    items: List[InvoiceResponse]
+    """One page of invoices matching the requested filters; total counts all matches."""
+    items: List[InvoiceListItem]
     total: int
     skip: int
     limit: int

@@ -6,6 +6,8 @@ from fastapi import APIRouter
 
 from backend.app.api.auth import router as auth_router
 from backend.app.api.customers import router as customers_router
+from backend.app.api.dashboard import router as dashboard_router
+from backend.app.api.demo import router as demo_router
 from backend.app.api.health import router as health_router
 from backend.app.api.historical import router as historical_router
 from backend.app.api.invoices import router as invoices_router
@@ -30,3 +32,9 @@ api_router.include_router(payments_router)
 
 # Prediction endpoints for scoring and risk assessment
 api_router.include_router(predictions_router)
+
+# Operational receivables summary
+api_router.include_router(dashboard_router)
+
+# Scripted demo path (3 paid + 1 open invoice -> score)
+api_router.include_router(demo_router)

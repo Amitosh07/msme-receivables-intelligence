@@ -4,15 +4,22 @@ Handles file validation, tenant-scoped storage, metadata persistence, and querie
 """
 
 import logging
+import re
 import uuid
-from typing import List, Optional, Tuple
+from dataclasses import dataclass
+from datetime import date, timedelta
+from typing import Dict, List, Optional
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, func, nulls_last, or_, select
+from sqlalchemy.orm import Session, selectinload
 
 from backend.app.core.config import settings
+from backend.app.models.customer import Customer
 from backend.app.models.invoice import Invoice
 from backend.app.models.invoice_document import InvoiceDocument
+from backend.app.models.prediction import PredictionResult
+from backend.app.services.manual_payment_service import business_today
+from backend.app.services.prediction_service import eligible_predictions
 from backend.app.services.storage import get_storage
 
 logger = logging.getLogger(__name__)
@@ -172,6 +179,44 @@ def get_invoice_by_id(
     )
 
 
+OUTSTANDING_STATUSES = ("OPEN", "PARTIAL")
+PAYMENT_STATUS_FILTERS = frozenset({"OPEN", "PARTIAL", "PAID", "OUTSTANDING"})
+AGING_FILTERS = frozenset({"current", "1-30", "31-60", "61-90", "90+", "overdue", "due-soon"})
+RISK_FILTERS = frozenset({"HIGH", "MEDIUM", "LOW", "UNAVAILABLE"})
+SORT_FIELDS = frozenset({"created", "uploaded", "due_date", "amount", "invoice_date"})
+DUE_SOON_DAYS = 7
+_LEGACY_LABEL = re.compile(r"^man-([0-9a-f]{1,8})$", re.IGNORECASE)
+
+
+class InvoiceQueryError(ValueError):
+    """A list filter or sort value is not recognised."""
+
+
+@dataclass(frozen=True)
+class InvoicePage:
+    items: List[Invoice]
+    total: int
+    predictions: Dict[uuid.UUID, PredictionResult]
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _aging_condition(aging: str, today: date):
+    due = Invoice.due_date
+    windows = {
+        "current": due >= today,
+        "1-30": due.between(today - timedelta(days=30), today - timedelta(days=1)),
+        "31-60": due.between(today - timedelta(days=60), today - timedelta(days=31)),
+        "61-90": due.between(today - timedelta(days=90), today - timedelta(days=61)),
+        "90+": due < today - timedelta(days=90),
+        "overdue": due < today,
+        "due-soon": due.between(today, today + timedelta(days=DUE_SOON_DAYS)),
+    }
+    return and_(Invoice.payment_status.in_(OUTSTANDING_STATUSES), windows[aging])
+
+
 def list_invoices_for_tenant(
     db: Session,
     business_id: uuid.UUID,
@@ -179,26 +224,98 @@ def list_invoices_for_tenant(
     limit: int = 50,
     payment_status: Optional[str] = None,
     origin: Optional[str] = None,
-) -> Tuple[List[Invoice], int]:
-    """
-    List invoices for a business tenant with pagination and optional status filter.
-    Returns (invoices_list, total_count).
-    """
-    query = select(Invoice).where(Invoice.business_id == business_id)
-    count_query = select(func.count(Invoice.id)).where(Invoice.business_id == business_id)
+    *,
+    q: Optional[str] = None,
+    aging: Optional[str] = None,
+    risk: Optional[str] = None,
+    sort: str = "created",
+    direction: str = "desc",
+    today: Optional[date] = None,
+) -> InvoicePage:
+    """One page of tenant invoices filtered, sorted and counted in the database.
 
-    if payment_status:
-        query = query.where(Invoice.payment_status == payment_status.upper())
-        count_query = count_query.where(Invoice.payment_status == payment_status.upper())
+    Aging matches the dashboard (only OPEN/PARTIAL invoices, India business
+    date). Risk filters use estimates that pass the history gate, so the list
+    never shows an estimate the invoice page would hide.
+    """
+    status_filter = payment_status.upper() if payment_status else None
+    aging_filter = aging.lower() if aging else None
+    risk_filter = risk.upper() if risk else None
+    if status_filter and status_filter not in PAYMENT_STATUS_FILTERS:
+        raise InvoiceQueryError(f"Unknown payment status '{payment_status}'.")
+    if aging_filter and aging_filter not in AGING_FILTERS:
+        raise InvoiceQueryError(f"Unknown aging filter '{aging}'.")
+    if risk_filter and risk_filter not in RISK_FILTERS:
+        raise InvoiceQueryError(f"Unknown risk filter '{risk}'.")
+    if sort not in SORT_FIELDS:
+        raise InvoiceQueryError(f"Unknown sort field '{sort}'.")
+    if direction not in ("asc", "desc"):
+        raise InvoiceQueryError("Sort direction must be 'asc' or 'desc'.")
 
+    conditions = [Invoice.business_id == business_id]
     if origin:
-        query = query.where(Invoice.origin == origin.upper())
-        count_query = count_query.where(Invoice.origin == origin.upper())
+        conditions.append(Invoice.origin == origin.upper())
+    if status_filter == "OUTSTANDING":
+        conditions.append(Invoice.payment_status.in_(OUTSTANDING_STATUSES))
+    elif status_filter:
+        conditions.append(Invoice.payment_status == status_filter)
+    if aging_filter:
+        conditions.append(_aging_condition(aging_filter, today or business_today()))
 
-    total = db.scalar(count_query) or 0
+    needle = (q or "").strip()
+    if needle:
+        pattern = f"%{_escape_like(needle)}%"
+        matches = [
+            Invoice.invoice_number.ilike(pattern, escape="\\"),
+            Invoice.unresolved_customer_name.ilike(pattern, escape="\\"),
+            Customer.display_name.ilike(pattern, escape="\\"),
+        ]
+        legacy = _LEGACY_LABEL.match(needle)
+        if legacy:
+            matches.append(Invoice.invoice_number.ilike(f"{legacy.group(1)}%"))
+        conditions.append(or_(*matches))
+
+    predictions: Optional[Dict[uuid.UUID, PredictionResult]] = None
+    if risk_filter:
+        predictions = eligible_predictions(db, business_id)
+        if risk_filter == "UNAVAILABLE":
+            if predictions:
+                conditions.append(Invoice.id.not_in(list(predictions)))
+        else:
+            conditions.append(
+                Invoice.id.in_([iid for iid, p in predictions.items() if p.risk_tier == risk_filter])
+            )
+
+    joined = (
+        select(Invoice)
+        .outerjoin(Customer, Invoice.customer_id == Customer.id)
+        .outerjoin(InvoiceDocument, Invoice.document_id == InvoiceDocument.id)
+        .where(*conditions)
+    )
+    total = db.scalar(select(func.count()).select_from(joined.with_only_columns(Invoice.id).subquery())) or 0
+
+    column = {
+        "created": Invoice.created_at,
+        "uploaded": func.coalesce(InvoiceDocument.created_at, Invoice.created_at),
+        "due_date": Invoice.due_date,
+        "amount": Invoice.amount,
+        "invoice_date": Invoice.invoice_date,
+    }[sort]
+    ordered = column.asc() if direction == "asc" else column.desc()
     items = list(
         db.scalars(
-            query.order_by(Invoice.created_at.desc()).offset(skip).limit(limit)
+            joined.options(selectinload(Invoice.customer))
+            .order_by(nulls_last(ordered), Invoice.created_at.desc(), Invoice.id)
+            .offset(skip)
+            .limit(limit)
         ).all()
     )
-    return items, total
+
+    page_ids = [invoice.id for invoice in items]
+    if predictions is None:
+        predictions = eligible_predictions(db, business_id, page_ids)
+    return InvoicePage(
+        items=items,
+        total=total,
+        predictions={iid: predictions[iid] for iid in page_ids if iid in predictions},
+    )

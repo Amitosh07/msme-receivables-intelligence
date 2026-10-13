@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 import logging
+import secrets
 from typing import List, Optional
 import uuid
 
@@ -131,8 +132,8 @@ logger = logging.getLogger(__name__)
 
 
 def generate_manual_invoice_reference() -> str:
-    """Generate an opaque invoice reference; database uniqueness is authoritative."""
-    return str(uuid.uuid4())
+    """Generate a short human-readable reference; database uniqueness is authoritative."""
+    return f"MAN-{secrets.token_hex(3).upper()}"
 
 
 def create_manual_historical_invoice(
@@ -143,8 +144,10 @@ def create_manual_historical_invoice(
     amount: Decimal,
     due_date: date,
     payment_date: Optional[date] = None,
+    invoice_number: Optional[str] = None,
+    invoice_date: Optional[date] = None,
 ) -> tuple[Invoice, Optional[Payment]]:
-    """Create a historical invoice with a generated DB-unique reference."""
+    """Create a historical invoice, using the user's invoice number when given."""
     customer = db.scalar(select(Customer).where(
         Customer.id == customer_id, Customer.business_id == business_id
     ))
@@ -152,12 +155,20 @@ def create_manual_historical_invoice(
         raise LookupError("Company not found.")
     if due_date.year < 1990 or due_date.year > 2100:
         raise ValueError("Due date must be between 1990 and 2100.")
-    reference = generate_manual_invoice_reference()
+    if invoice_date is not None and (invoice_date.year < 1990 or invoice_date > due_date):
+        raise ValueError("Invoice date must be on or before the due date.")
+    if invoice_number:
+        taken = db.scalar(select(Invoice.id).where(
+            Invoice.business_id == business_id, Invoice.invoice_number == invoice_number
+        ))
+        if taken is not None:
+            raise ValueError(f"An invoice numbered {invoice_number} already exists.")
+    reference = invoice_number or generate_manual_invoice_reference()
     invoice = Invoice(
         business_id=business_id,
         customer_id=customer.id,
         invoice_number=reference,
-        invoice_date=None,
+        invoice_date=invoice_date,
         due_date=due_date,
         amount=amount,
         currency=null(),
@@ -185,7 +196,7 @@ def create_manual_historical_invoice(
         return invoice, payment
     except IntegrityError as exc:
         db.rollback()
-        raise ValueError("Generated invoice identifier already exists; please retry.") from exc
+        raise ValueError("An invoice with this number already exists; please retry or use another number.") from exc
     except Exception:
         db.rollback()
         raise

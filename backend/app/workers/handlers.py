@@ -22,6 +22,7 @@ from backend.app.services.customer_identity import (
     resolve_customer_identity,
     resolve_or_create_historical_customer,
 )
+from backend.app.services.manual_payment_service import derive_invoice_payment_status
 from backend.app.services.storage import StorageError, StorageFileNotFoundError, get_storage
 
 logger = logging.getLogger(__name__)
@@ -225,7 +226,8 @@ def handle_parse_invoice(
     if unmatched_payments:
         for p in unmatched_payments:
             p.invoice_id = invoice.id
-        invoice.payment_status = "PAID"
+        db.flush()
+        invoice.payment_status = derive_invoice_payment_status(db, invoice)
         logger.info(
             "Reconciled %d historical payment(s) with invoice '%s'.",
             len(unmatched_payments), invoice.invoice_number,

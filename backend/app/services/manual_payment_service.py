@@ -121,6 +121,21 @@ def get_invoice_payment_summary(
     return total_paid, outstanding
 
 
+def get_paid_totals(
+    db: Session,
+    invoice_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, Decimal]:
+    """Return total recorded payments per invoice in one grouped query."""
+    if not invoice_ids:
+        return {}
+    rows = db.execute(
+        select(Payment.invoice_id, func.coalesce(func.sum(Payment.amount), 0))
+        .where(Payment.invoice_id.in_(invoice_ids))
+        .group_by(Payment.invoice_id)
+    ).all()
+    return {invoice_id: Decimal(str(total)) for invoice_id, total in rows}
+
+
 def get_invoice_payments(
     db: Session,
     business_id: uuid.UUID,

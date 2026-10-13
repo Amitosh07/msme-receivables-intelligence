@@ -44,6 +44,16 @@ class ManualHistoricalInvoiceCreate(BaseModel):
     amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
     due_date: date
     payment_date: Optional[date] = None
+    invoice_number: Optional[str] = Field(default=None, max_length=64)
+    invoice_date: Optional[date] = None
+
+    @model_validator(mode="after")
+    def clean_identity(self) -> "ManualHistoricalInvoiceCreate":
+        if self.invoice_number is not None:
+            self.invoice_number = self.invoice_number.strip() or None
+        if self.invoice_date is not None and self.invoice_date > self.due_date:
+            raise ValueError("Invoice date cannot be after the due date.")
+        return self
 
 
 class HistoricalCompanySummary(BaseModel):

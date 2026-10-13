@@ -189,6 +189,42 @@ class V1Predictor:
 
         return result
 
+    def explain(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Per-feature contributions to the classifier's late-payment score.
+
+        Returns one row per input row with a column per feature plus ``bias``.
+        Values are additive in log-odds space: ``sigmoid(row.sum())`` equals the
+        ``risk_score`` returned by :meth:`predict` for the same row.
+        """
+        if not self._loaded:
+            raise InferenceError("Models not loaded. Call .load() first.")
+        self.validate_schema(df)
+        X = self._prepare_features(df, self.classifier_encoder)
+        best = getattr(self.classifier, "best_iteration", None)
+        contributions = self.classifier.get_booster().predict(
+            xgb.DMatrix(X),
+            pred_contribs=True,
+            iteration_range=(0, best + 1) if best is not None else (0, 0),
+        )
+        return pd.DataFrame(contributions, columns=[*self.feature_columns, "bias"], index=df.index)
+
+    def feature_importance(self) -> Dict[str, Dict[str, float]]:
+        """Normalised gain importance for each model, keyed by feature name."""
+        if not self._loaded:
+            raise InferenceError("Models not loaded. Call .load() first.")
+        result: Dict[str, Dict[str, float]] = {}
+        for name, model in (("classifier", self.classifier), ("timing", self.timing_model)):
+            scores = model.get_booster().get_score(importance_type="gain")
+            total = sum(scores.values()) or 1.0
+            result[name] = {feature: scores.get(feature, 0.0) / total for feature in self.feature_columns}
+        return result
+
+    def unknown_categories(self, df: pd.DataFrame) -> List[str]:
+        """Categorical columns whose value in the first row was not seen in training."""
+        encoded = self.classifier_encoder.transform(df[self.categorical_columns].iloc[[0]])
+        return [column for column, value in zip(self.categorical_columns, encoded[0]) if value == -1]
+
 
 def score_open_invoices(
     data_dir: Path,

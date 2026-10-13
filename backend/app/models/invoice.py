@@ -162,6 +162,13 @@ class Invoice(Base, TimestampMixin):
         cascade="all, delete-orphan",
     )
 
+    @property
+    def customer_name(self) -> str | None:
+        """Resolved customer display name, else the unresolved extracted name."""
+        if self.customer is not None:
+            return self.customer.display_name
+        return self.unresolved_customer_name
+
     def __repr__(self) -> str:
         return (
             f"<Invoice(id={self.id}, number='{self.invoice_number}', "

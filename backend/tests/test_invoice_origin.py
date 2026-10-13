@@ -315,6 +315,51 @@ class TestInvoiceOrigin(unittest.TestCase):
         self.assertNotIn(inv_hist.invoice_number, curr_numbers)
         self.assertIn(inv_curr.invoice_number, curr_numbers)
 
+    def test_invoice_list_and_detail_expose_customer_name(self):
+        """Operational invoice responses carry the customer name for collections work."""
+        customer = Customer(
+            business_id=self.business_a_id,
+            display_name="Acme Buyers Pvt Ltd",
+            normalized_name="acme buyers pvt ltd",
+        )
+        self.db.add(customer)
+        self.db.flush()
+        resolved = Invoice(
+            id=uuid.uuid4(),
+            business_id=self.business_a_id,
+            customer_id=customer.id,
+            invoice_number=f"CUST-{uuid.uuid4().hex[:6]}",
+            invoice_date=date(2026, 8, 1),
+            due_date=date(2026, 8, 31),
+            amount=2500.50,
+            currency="INR",
+            origin=InvoiceOrigin.CURRENT.value,
+        )
+        unresolved = Invoice(
+            id=uuid.uuid4(),
+            business_id=self.business_a_id,
+            unresolved_customer_name="Unknown Traders",
+            invoice_number=f"UNRES-{uuid.uuid4().hex[:6]}",
+            invoice_date=date(2026, 8, 2),
+            due_date=date(2026, 9, 1),
+            amount=100.0,
+            currency="INR",
+            origin=InvoiceOrigin.CURRENT.value,
+        )
+        self.db.add_all([resolved, unresolved])
+        self.db.commit()
+        headers = {"Authorization": f"Bearer {self.token_a}"}
+
+        res_list = self.client.get("/invoices?origin=CURRENT", headers=headers)
+        self.assertEqual(res_list.status_code, 200)
+        names = {item["invoice_number"]: item["customer_name"] for item in res_list.json()["items"]}
+        self.assertEqual(names[resolved.invoice_number], "Acme Buyers Pvt Ltd")
+        self.assertEqual(names[unresolved.invoice_number], "Unknown Traders")
+
+        res_detail = self.client.get(f"/invoices/{resolved.id}", headers=headers)
+        self.assertEqual(res_detail.status_code, 200)
+        self.assertEqual(res_detail.json()["customer_name"], "Acme Buyers Pvt Ltd")
+
     def test_tenant_isolation_preserved(self):
         """Invoices of Business A (historical or current) are never visible to Business B."""
         inv_a = Invoice(

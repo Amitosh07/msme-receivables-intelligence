@@ -219,6 +219,7 @@ class TestCustomerIdentity(unittest.TestCase):
         payload = InvoiceResponse.model_validate(invoice)
         self.assertIsNone(payload.customer_id)
         self.assertEqual(payload.unresolved_customer_name, "Unmatched Buyer Pvt Ltd")
+        self.assertEqual(payload.customer_name, "Unmatched Buyer Pvt Ltd")
 
     def test_no_customer_information_contract_and_api_shape(self) -> None:
         invoice = self._invoice(customer_id=None, unresolved_customer_name=None)
@@ -226,6 +227,7 @@ class TestCustomerIdentity(unittest.TestCase):
         payload = InvoiceResponse.model_validate(invoice)
         self.assertIsNone(payload.customer_id)
         self.assertIsNone(payload.unresolved_customer_name)
+        self.assertIsNone(payload.customer_name)
 
     def test_later_resolution_sets_customer_and_clears_name(self) -> None:
         invoice = self._invoice(customer_id=None, unresolved_customer_name="Later Buyer")

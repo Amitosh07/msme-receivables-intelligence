@@ -4,14 +4,18 @@ Provides invoice PDF upload, document metadata listing, file download, and invoi
 """
 
 import uuid
+from decimal import Decimal
 from typing import List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from backend.app.core.dependencies import TenantContext, get_db, get_tenant_context
+from backend.app.core.rate_limit import upload_limit
 from backend.app.models.invoice import InvoiceOrigin
+from backend.app.schemas.prediction import PredictionResponse
 from backend.app.schemas.invoice import (
     InvoiceDocumentResponse,
+    InvoiceListItem,
     InvoiceListResponse,
     InvoiceResponse,
     InvoiceUploadResponse,
@@ -30,6 +34,7 @@ from backend.app.schemas.payment_proof import (
 )
 from backend.app.services.customer_identity import correct_invoice_customer
 from backend.app.services.invoice_service import (
+    InvoiceQueryError,
     get_document_by_id,
     get_invoice_by_id,
     list_documents_for_tenant,
@@ -38,6 +43,7 @@ from backend.app.services.invoice_service import (
 )
 from backend.app.services.manual_payment_service import (
     get_invoice_payment_summary,
+    get_paid_totals,
     get_invoice_payments,
     record_manual_payment,
 )
@@ -58,6 +64,7 @@ router = APIRouter(prefix="/invoices", tags=["Invoices"])
     response_model=InvoiceUploadResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Upload an invoice PDF document",
+    dependencies=[Depends(upload_limit)],
 )
 async def upload_invoice(
     file: UploadFile = File(..., description="Invoice document in PDF format"),
@@ -220,28 +227,56 @@ def get_document_file(
 @router.get(
     "",
     response_model=InvoiceListResponse,
-    summary="List invoices for the tenant with pagination",
+    summary="List invoices for the tenant with filters, sorting and pagination",
 )
 def list_invoices(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
-    payment_status: Optional[str] = Query(None, description="Filter by payment status (OPEN, PAID)"),
+    payment_status: Optional[str] = Query(None, description="OPEN, PARTIAL, PAID or OUTSTANDING (OPEN + PARTIAL)"),
     origin: Optional[str] = Query(None, description="Filter by data origin (CURRENT, HISTORICAL)"),
+    q: Optional[str] = Query(None, max_length=100, description="Search invoice number or customer name"),
+    aging: Optional[str] = Query(None, description="current, 1-30, 31-60, 61-90, 90+, overdue or due-soon"),
+    risk: Optional[str] = Query(None, description="HIGH, MEDIUM, LOW or UNAVAILABLE"),
+    sort: str = Query("created", description="created, uploaded, due_date, amount or invoice_date"),
+    direction: str = Query("desc", description="asc or desc"),
     tenant_ctx: TenantContext = Depends(get_tenant_context),
     db: Session = Depends(get_db),
 ) -> InvoiceListResponse:
     """List invoices belonging to the authenticated business tenant."""
-    items, total = list_invoices_for_tenant(
-        db=db,
-        business_id=tenant_ctx.business_id,
-        skip=skip,
-        limit=limit,
-        payment_status=payment_status,
-        origin=origin,
-    )
+    try:
+        page = list_invoices_for_tenant(
+            db=db,
+            business_id=tenant_ctx.business_id,
+            skip=skip,
+            limit=limit,
+            payment_status=payment_status,
+            origin=origin,
+            q=q,
+            aging=aging,
+            risk=risk,
+            sort=sort,
+            direction=direction,
+        )
+    except InvoiceQueryError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    paid = get_paid_totals(db, [i.id for i in page.items])
+    responses = []
+    for invoice in page.items:
+        total_paid = paid.get(invoice.id, Decimal("0"))
+        outstanding = max(Decimal(str(invoice.amount)) - total_paid, Decimal("0"))
+        prediction = page.predictions.get(invoice.id)
+        responses.append(
+            InvoiceListItem.model_validate(invoice).model_copy(
+                update={
+                    "total_paid": float(total_paid),
+                    "outstanding_balance": float(outstanding),
+                    "prediction": PredictionResponse.model_validate(prediction) if prediction else None,
+                }
+            )
+        )
     return InvoiceListResponse(
-        items=[InvoiceResponse.model_validate(i) for i in items],
-        total=total,
+        items=responses,
+        total=page.total,
         skip=skip,
         limit=limit,
     )
@@ -338,6 +373,7 @@ def list_invoice_payments(
     response_model=PaymentProofUploadResponse,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Upload a payment proof document for verification",
+    dependencies=[Depends(upload_limit)],
 )
 async def upload_proof(
     invoice_id: uuid.UUID,
