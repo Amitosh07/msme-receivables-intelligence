@@ -11,6 +11,8 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from decimal import Decimal
 
+from backend.app.schemas.invoice import InvoiceResponse
+
 
 class HistoricalCompanyCreate(BaseModel):
     """Explicit creation request for a tenant-owned historical company."""
@@ -113,6 +115,28 @@ class HistoricalInvoiceItem(BaseModel):
     document_id: Optional[uuid.UUID] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class HistoricalReviewInvoiceResponse(InvoiceResponse):
+    """Historical invoice awaiting review, including the extracted parties."""
+
+    seller_name: Optional[str] = None
+    buyer_name: Optional[str] = None
+    seller_confidence: Optional[float] = None
+    buyer_confidence: Optional[float] = None
+    match_status: Optional[str] = None
+    review_reason: Optional[str] = None
+
+
+class IdentityDiagnosticItem(BaseModel):
+    """A stored invoice whose customer name matches the registered business."""
+
+    invoice_id: uuid.UUID
+    invoice_number: Optional[str] = None
+    customer_id: uuid.UUID
+    customer_name: str
+    origin: str
+    reason: str
 
 
 class HistoricalCompanyDetail(BaseModel):

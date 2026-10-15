@@ -1,5 +1,5 @@
 import axios, { AxiosError } from "axios";
-import type { AuthResponse, CashflowForecast, CurrentUser, CustomerBalances, DashboardSummary, DemoRemoval, DemoRun, DemoStatus, ModelInsights, PredictionExplanation, HistoricalCompanyCreate, HistoricalCompanyDetail, HistoricalCompanySummary, HistoricalInvoiceItem, HistoricalReviewInvoice, Invoice, InvoiceDocument, InvoiceList, InvoiceOrigin, InvoiceQuery, InvoiceUpload, ManualPaymentRequest, ManualPaymentResponse, PaymentImport, PaymentProof, PaymentProofUpload, PaymentRecord, PredictionList, PredictionState } from "./types";
+import type { AuthResponse, CashflowForecast, CurrentUser, CustomerBalances, DashboardSummary, DemoRemoval, DemoRun, DemoStatus, ModelInsights, PredictionExplanation, HistoricalCompanyCreate, HistoricalCompanyDetail, HistoricalCompanySummary, HistoricalInvoiceItem, HistoricalReviewInvoice, Invoice, InvoiceDocument, InvoiceList, InvoiceOrigin, InvoiceQuery, InvoiceUpload, ManualPaymentRequest, ManualPaymentResponse, PaymentImport, PaymentProof, PaymentProofUpload, PaymentRecord, PredictionList, PredictionState, TaskStatus } from "./types";
 
 const TOKEN_KEY = "msme_receivables_token";
 const SESSION_KEY = "msme_receivables_session_token";
@@ -26,6 +26,9 @@ export function normaliseError(error: unknown): ApiError {
 }
 export const authApi = { register: (data: { email: string; password: string; full_name: string; business_name: string }) => api.post<AuthResponse>("/auth/register", data).then((r) => r.data), login: (data: { email: string; password: string }) => api.post<AuthResponse>("/auth/login", data).then((r) => r.data), me: () => api.get<CurrentUser>("/auth/me").then((r) => r.data) };
 const uploadFile = (path: string, file: File) => { const body = new FormData(); body.append("file", file); return api.post<PaymentImport>(path, body).then((r) => r.data); };
+export const tasksApi = {
+  get: (taskId: string) => api.get<TaskStatus>(`/tasks/${taskId}`).then((r) => r.data),
+};
 export const invoicesApi = {
   list: (query: InvoiceQuery = {}) => {
     const params = Object.fromEntries(Object.entries({ origin: "CURRENT", ...query }).filter(([, value]) => value !== undefined && value !== ""));

@@ -113,7 +113,10 @@ def decode_encryption_key(value: str) -> bytes:
     raw = value.strip()
     padded = raw + "=" * (-len(raw) % 4)
     try:
-        key = base64.urlsafe_b64decode(padded.replace("+", "-").replace("/", "_"))
+        # Normalize URL-safe input to standard base64 so validation rejects
+        # otherwise silently ignored characters.
+        standard = padded.replace("-", "+").replace("_", "/")
+        key = base64.b64decode(standard, validate=True)
     except (binascii.Error, ValueError) as exc:
         raise InsecureConfigurationError("A storage encryption key is not valid base64.") from exc
     if len(key) != ENCRYPTION_KEY_BYTES:

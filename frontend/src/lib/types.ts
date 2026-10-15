@@ -29,7 +29,9 @@ export interface DemoRun { customer_id: string; customer_name: string; open_invo
 export interface DemoStatus { exists: boolean; customer_id?: string | null; customer_name?: string | null; open_invoice_id?: string | null; scored: boolean }
 export interface DemoRemoval { removed_invoices: number; removed_payments: number; removed_customer: boolean }
 export interface InvoiceDocument { id: string; business_id: string; invoice_id?: string | null; original_filename: string; content_type: string; file_size: number; processing_status: string; origin?: InvoiceOrigin; error_message?: string | null; created_at: string }
-export interface InvoiceUpload { document_id: string; invoice_id?: string | null; original_filename: string; file_size: number; processing_status: string; task_id?: string | null; created_at: string }
+export interface InvoiceIdentitySummary { seller_name?: string | null; buyer_name?: string | null; seller_confidence?: number | null; buyer_confidence?: number | null; match_status?: string | null; review_reason?: string | null; matched_customer_id?: string | null; selected_customer_id?: string | null }
+export interface TaskStatus { id: string; task_type: string; status: "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED"; state: "queued" | "processing" | "completed" | "failed"; invoice_id?: string | null; document_id?: string | null; processing_status?: string | null; error_message?: string | null; identity?: InvoiceIdentitySummary | null }
+export interface InvoiceUpload { document_id: string; invoice_id?: string | null; original_filename: string; file_size: number; processing_status: string; origin?: InvoiceOrigin; task_id?: string | null; created_at: string }
 export interface Prediction { prediction_available: true; reason?: null; id: string; business_id: string; invoice_id: string; prediction: boolean; risk_score: number; risk_tier: "LOW" | "MEDIUM" | "HIGH"; predicted_days_until_payment?: number | null; expected_payment_date?: string | null; created_at: string }
 export interface PredictionUnavailable { prediction_available: false; reason: string; invoice_id: string; eligible_history_count: number; required_history_count: number }
 export type PredictionState = Prediction | PredictionUnavailable
@@ -63,12 +65,20 @@ export interface HistoricalCompanyCreate {
 export interface HistoricalReviewInvoice {
   id: string;
   customer_id?: string | null;
+  customer_name?: string | null;
+  unresolved_customer_name?: string | null;
   invoice_number?: string | null;
   invoice_date?: string | null;
   due_date?: string | null;
   amount: number;
   currency?: string | null;
   processing_status: string;
+  seller_name?: string | null;
+  buyer_name?: string | null;
+  seller_confidence?: number | null;
+  buyer_confidence?: number | null;
+  match_status?: string | null;
+  review_reason?: string | null;
 }
 
 export interface HistoricalInvoiceItem {

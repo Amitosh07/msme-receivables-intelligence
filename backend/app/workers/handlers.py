@@ -6,7 +6,9 @@ import logging
 import uuid
 from typing import Any, Dict
 from sqlalchemy import null, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from backend.app.models.invoice import Invoice, InvoiceOrigin
 from backend.app.models.invoice_document import InvoiceDocument
@@ -17,10 +19,9 @@ from backend.app.services.parser import (
     PermanentParserError,
     TransientParserError,
 )
-from backend.app.services.customer_identity import (
-    CustomerIdentityResult,
-    resolve_customer_identity,
-    resolve_or_create_historical_customer,
+from backend.app.services.invoice_identity import (
+    evidence_confidence,
+    resolve_invoice_identity,
 )
 from backend.app.services.manual_payment_service import derive_invoice_payment_status
 from backend.app.services.storage import StorageError, StorageFileNotFoundError, get_storage
@@ -142,33 +143,43 @@ def handle_parse_invoice(
         except ValueError:
             payload_customer_id = None
 
-    identity_args = dict(
+    field_confidence = extracted.field_confidence or {}
+    decision = resolve_invoice_identity(
+        db,
         business_id=task.business_id,
-        customer_id=existing_inv.customer_id if existing_inv else payload_customer_id,
-        gstin=extracted.customer_gstin,
-        customer_ref=extracted.customer_ref,
-        display_name=extracted.customer_name,
+        seller_name=extracted.seller_name,
+        seller_gstin=extracted.seller_gstin,
+        seller_confidence=evidence_confidence(field_confidence, "seller_name", extracted.seller_name),
+        buyer_name=extracted.customer_name,
+        buyer_gstin=extracted.customer_gstin,
+        buyer_confidence=evidence_confidence(field_confidence, "customer_name", extracted.customer_name),
+        buyer_ref=extracted.customer_ref,
+        selected_customer_id=payload_customer_id,
+        allow_create=is_historical,
     )
-    if is_historical and extracted.customer_name and payload_customer_id is None:
-        try:
-            identity = resolve_or_create_historical_customer(db, **identity_args)
-        except ValueError:
-            # Conflicting or ambiguous extracted identity requires human choice;
-            # it must not turn an otherwise usable historical invoice into ERROR.
-            identity = CustomerIdentityResult(None)
-        if identity.customer:
-            identity.customer.has_historical_context = True
+    # A previously stored customer is kept only when this parse did not identify a buyer.
+    # A selected or previously stored company never overrides a conflicting extraction.
+    if decision.status == "review":
+        customer = None
+        unresolved_customer_name = decision.buyer_name
+    elif decision.customer is not None:
+        customer = decision.customer
+        unresolved_customer_name = None
+        if is_historical:
+            customer.has_historical_context = True
+    elif existing_inv is not None and existing_inv.customer_id and not extracted.customer_name:
+        customer = existing_inv.customer
+        unresolved_customer_name = None
     else:
-        identity = resolve_customer_identity(db, **identity_args)
-    customer = identity.customer
-    unresolved_customer_name = None if customer else extracted.customer_name
+        customer = None
+        unresolved_customer_name = decision.buyer_name
 
-    # 7. Invoice creation & duplicate handling
+    needs_review = decision.status == "review" or (
+        is_historical and (customer is None or not extracted.due_date)
+    )
+    processing_status = "NEEDS_REVIEW" if needs_review else "PROCESSED"
 
-    if existing_inv:
-        invoice = existing_inv
-        # A retry or a second document for the same natural invoice key must
-        # converge on the same row while still repairing incomplete state.
+    def _apply_invoice_fields(invoice: Invoice) -> None:
         invoice.customer_id = customer.id if customer else None
         invoice.unresolved_customer_name = unresolved_customer_name
         invoice.invoice_date = extracted.invoice_date
@@ -176,11 +187,14 @@ def handle_parse_invoice(
         invoice.amount = extracted.amount
         invoice.currency = extracted.currency if is_historical else (extracted.currency or "INR")
         invoice.payment_terms = extracted.payment_terms
-        invoice.processing_status = (
-            "NEEDS_REVIEW" if is_historical and (not customer or not extracted.due_date) else "PROCESSED"
-        )
+        invoice.processing_status = processing_status
         if invoice.document_id is None:
             invoice.document_id = doc.id
+
+    # 7. Invoice creation & duplicate handling
+    if existing_inv:
+        invoice = existing_inv
+        _apply_invoice_fields(invoice)
         logger.info(
             "Invoice with number '%s' already exists for tenant. Linking existing record.",
             extracted.invoice_number,
@@ -202,14 +216,30 @@ def handle_parse_invoice(
             ),
             payment_terms=extracted.payment_terms,
             payment_status="OPEN",
-            processing_status=(
-                "NEEDS_REVIEW" if is_historical and (not customer or not extracted.due_date) else "PROCESSED"
-            ),
+            processing_status=processing_status,
             origin=origin_val,
             document_id=doc.id,
         )
-        db.add(invoice)
-        db.flush()
+        try:
+            with db.begin_nested():
+                db.add(invoice)
+                db.flush()
+        except IntegrityError:
+            if not extracted.invoice_number:
+                raise
+            invoice = db.scalar(
+                select(Invoice).where(
+                    Invoice.business_id == task.business_id,
+                    Invoice.invoice_number == extracted.invoice_number,
+                )
+            )
+            if invoice is None:
+                raise
+            _apply_invoice_fields(invoice)
+            logger.info(
+                "Concurrent duplicate invoice '%s' converged on the existing tenant record.",
+                extracted.invoice_number,
+            )
 
     # 8. Reconcile with historical payments
     unmatched_payments = []
@@ -241,10 +271,20 @@ def handle_parse_invoice(
         review_needs.append("company selection")
     if is_historical and not extracted.due_date:
         review_needs.append("due date")
-    doc.error_message = (
+    review_message = (
         "Manual review required: " + " and ".join(review_needs) + "."
         if review_needs else None
     )
+    if decision.review_reason:
+        review_message = (
+            f"{decision.review_reason} {review_message}".strip()
+            if review_message else decision.review_reason
+        )
+    doc.error_message = review_message
+    stored_payload = dict(task.payload or {})
+    stored_payload["identity"] = decision.as_dict()
+    task.payload = stored_payload
+    flag_modified(task, "payload")
     task.invoice_id = invoice.id
     db.commit()
     db.refresh(task)

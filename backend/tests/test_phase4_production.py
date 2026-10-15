@@ -116,6 +116,24 @@ class TestSecretEnforcement(unittest.TestCase):
         self.assertEqual(decode_encryption_key(base64.b64encode(key).decode()), key)
         self.assertEqual(decode_encryption_key(base64.urlsafe_b64encode(key).decode().rstrip("=")), key)
 
+    def test_encryption_key_validation_rejects_invalid_length_and_malformed_values(self):
+        with self.assertRaisesRegex(
+            InsecureConfigurationError, r"must decode to 32 bytes"
+        ):
+            decode_encryption_key(base64.b64encode(b"too-short").decode())
+        with self.assertRaisesRegex(
+            InsecureConfigurationError, r"not valid base64"
+        ):
+            decode_encryption_key("not-base64!")
+
+    def test_secure_configuration_rejects_invalid_length_key(self):
+        with self.assertRaisesRegex(
+            InsecureConfigurationError, r"must decode to 32 bytes"
+        ):
+            enforce_secure_configuration(
+                strong_settings(STORAGE_ENCRYPTION_KEY=base64.b64encode(b"short").decode())
+            )
+
     def test_urls_are_redacted_for_logs(self):
         self.assertEqual(redact_url("redis://:p%40ss@redis:6379/0"), "redis://:***@redis:6379/0")
         self.assertEqual(redact_url("postgresql://u:secret@db/x"), "postgresql://u:***@db/x")

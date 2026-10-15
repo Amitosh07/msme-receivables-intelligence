@@ -26,14 +26,21 @@ from backend.app.schemas.historical import (
     HistoricalInvoiceCompanyCorrection,
     HistoricalInvoiceReview,
     HistoricalInvoiceItem,
+    HistoricalReviewInvoiceResponse,
+    IdentityDiagnosticItem,
     ManualHistoricalInvoiceCreate,
 )
-from backend.app.schemas.invoice import InvoiceResponse, InvoiceUploadResponse
+from backend.app.schemas.invoice import InvoiceUploadResponse
 from backend.app.schemas.payment import (
     ManualPaymentRequest,
     ManualPaymentResponse,
     PaymentImportResponse,
     PaymentResponse,
+)
+from backend.app.services.invoice_identity import (
+    latest_invoice_identity,
+    list_payment_identity_mismatches,
+    list_seller_as_customer_invoices,
 )
 from backend.app.services.historical_service import (
     correct_historical_invoice_company,
@@ -172,20 +179,79 @@ def correct_invoice_company_endpoint(
 
 @router.get(
     "/invoices/review",
-    response_model=List[InvoiceResponse],
+    response_model=List[HistoricalReviewInvoiceResponse],
     summary="List historical invoices awaiting manual completion",
 )
 def list_historical_invoice_reviews(
     tenant_ctx: TenantContext = Depends(get_tenant_context),
     db: Session = Depends(get_db),
-) -> List[InvoiceResponse]:
-    return list(db.scalars(
+) -> List[HistoricalReviewInvoiceResponse]:
+    invoices = list(db.scalars(
         select(Invoice).where(
             Invoice.business_id == tenant_ctx.business_id,
             Invoice.origin == InvoiceOrigin.HISTORICAL.value,
             Invoice.processing_status == "NEEDS_REVIEW",
         ).order_by(Invoice.created_at.desc())
     ).all())
+    items: list[HistoricalReviewInvoiceResponse] = []
+    for invoice in invoices:
+        identity = latest_invoice_identity(db, invoice.id)
+        items.append(
+            HistoricalReviewInvoiceResponse.model_validate(invoice).model_copy(update={
+                "seller_name": identity.get("seller_name"),
+                "buyer_name": identity.get("buyer_name"),
+                "seller_confidence": identity.get("seller_confidence"),
+                "buyer_confidence": identity.get("buyer_confidence"),
+                "match_status": identity.get("match_status"),
+                "review_reason": identity.get("review_reason"),
+            })
+        )
+    return items
+
+
+@router.get(
+    "/identity-diagnostics",
+    response_model=List[IdentityDiagnosticItem],
+    summary="List invoices whose customer name matches the registered business",
+)
+def identity_diagnostics(
+    tenant_ctx: TenantContext = Depends(get_tenant_context),
+    db: Session = Depends(get_db),
+) -> List[IdentityDiagnosticItem]:
+    """Read-only. Does not merge, rename, or reassign any records."""
+    items: list[IdentityDiagnosticItem] = []
+    seen: set[uuid.UUID] = set()
+    for invoice in list_seller_as_customer_invoices(db, tenant_ctx.business_id):
+        if invoice.customer_id is None or invoice.id in seen:
+            continue
+        seen.add(invoice.id)
+        items.append(IdentityDiagnosticItem(
+            invoice_id=invoice.id,
+            invoice_number=invoice.invoice_number,
+            customer_id=invoice.customer_id,
+            customer_name=invoice.customer.display_name if invoice.customer else "",
+            origin=invoice.origin,
+            reason=(
+                "Customer name matches the registered business. "
+                "Review whether the seller was stored as the buyer."
+            ),
+        ))
+    for invoice in list_payment_identity_mismatches(db, tenant_ctx.business_id):
+        if invoice.customer_id is None or invoice.id in seen:
+            continue
+        seen.add(invoice.id)
+        items.append(IdentityDiagnosticItem(
+            invoice_id=invoice.id,
+            invoice_number=invoice.invoice_number,
+            customer_id=invoice.customer_id,
+            customer_name=invoice.customer.display_name if invoice.customer else "",
+            origin=invoice.origin,
+            reason=(
+                "A recorded payment names a different customer than the invoice. "
+                "Review the company assignment. Nothing was changed automatically."
+            ),
+        ))
+    return items
 
 
 @router.post(

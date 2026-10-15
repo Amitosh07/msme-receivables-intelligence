@@ -13,6 +13,7 @@ from backend.app.api.historical import router as historical_router
 from backend.app.api.invoices import router as invoices_router
 from backend.app.api.payments import router as payments_router
 from backend.app.api.predictions import router as predictions_router
+from backend.app.api.tasks import router as tasks_router
 
 api_router = APIRouter()
 
@@ -35,6 +36,9 @@ api_router.include_router(predictions_router)
 
 # Operational receivables summary
 api_router.include_router(dashboard_router)
+
+# Background task status for upload synchronization
+api_router.include_router(tasks_router)
 
 # Scripted demo path (3 paid + 1 open invoice -> score)
 api_router.include_router(demo_router)

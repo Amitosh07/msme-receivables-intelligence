@@ -162,7 +162,14 @@ class InvoiceParser:
             if term_days is not None:
                 due_date = _Candidate(invoice_date.value + timedelta(days=term_days), 0.82)
         amount, currency = cls._extract_amount_and_currency(text)
-        customer_name, customer_ref, customer_gstin, customer_confidence = cls._extract_customer(text)
+        # Seller is identified before the buyer so a header company is never reused as the customer.
+        seller_name, seller_gstin, seller_confidence = cls._extract_seller(text)
+        # Only an explicitly labeled seller is removed from the buyer. A weak header
+        # guess must not erase the bill-to name.
+        excluded_seller = {seller_name} if seller_name and seller_confidence >= 0.75 else set()
+        customer_name, customer_ref, customer_gstin, customer_confidence = cls._extract_customer(
+            text, excluded_names=excluded_seller
+        )
 
         # Required extraction contract:
         # 1. invoice_number
@@ -186,14 +193,13 @@ class InvoiceParser:
         if missing:
             return None, missing
 
-        # Extract optional fields
-        seller_name, seller_gstin = cls._extract_seller(text, customer_name, customer_gstin)
         subtotal, taxable_amount, cgst, sgst, igst = cls._extract_tax_breakdown(text)
         po_number = cls._extract_po_number(text)
 
         field_confidence = {
             "invoice_number": number.score if number else 0.0,
             "customer_name": customer_confidence,
+            "seller_name": seller_confidence if seller_name else 0.0,
             "invoice_date": invoice_date.score if invoice_date else 0.0,
             "due_date": due_date.score if due_date else 0.0,
             "amount": amount.score,
@@ -383,7 +389,9 @@ class InvoiceParser:
         return max(matches, key=lambda item: item.score, default=None)
 
     @staticmethod
-    def _extract_customer(text: str) -> tuple[Optional[str], Optional[str], Optional[str], float]:
+    def _extract_customer(
+        text: str, excluded_names: Optional[set[str]] = None
+    ) -> tuple[Optional[str], Optional[str], Optional[str], float]:
         lines = [line.strip(" :#-") for line in text.splitlines()]
         labels = re.compile(
             r"(?i)^(?:details\s+of\s+(?:receiver|buyer|recipient)(?:\s*[|/]\s*(?:billed\s+to|bill\s+to))?"
@@ -409,6 +417,11 @@ class InvoiceParser:
         name: Optional[str] = None
         gstin: Optional[str] = None
         confidence = 0.0
+        excluded = {
+            candidate.casefold()
+            for candidate in (excluded_names or set())
+            if candidate and candidate.strip()
+        }
 
         for index, line in enumerate(lines):
             if not labels.match(line):
@@ -428,6 +441,7 @@ class InvoiceParser:
                     re.search(r"[A-Za-z]", clean_name)
                     and not re.fullmatch(r"[A-Z]{2,5}-?\d+", clean_name)
                     and len(clean_name) >= 2
+                    and clean_name.casefold() not in excluded
                     and not re.match(r"(?i)^(?:GSTIN|PAN|CIN|STATE|INV|PO|TEL|MOB|PH)[-:/]?", clean_name)
                 ):
                     name = clean_name[:255]
@@ -468,7 +482,7 @@ class InvoiceParser:
         text: str,
         customer_name: Optional[str] = None,
         customer_gstin: Optional[str] = None,
-    ) -> tuple[Optional[str], Optional[str]]:
+    ) -> tuple[Optional[str], Optional[str], float]:
         lines = [line.strip(" :#-") for line in text.splitlines() if line.strip(" :#-")]
         seller_labels = re.compile(
             r"(?i)^(?:seller(?:\s*(?:name|details))?|supplier(?:\s*(?:name|details))?"
@@ -476,8 +490,9 @@ class InvoiceParser:
         )
         seller_name = None
         seller_gstin = None
+        seller_confidence = 0.0
 
-        # Look for explicit seller label
+        # Explicit seller labels are trustworthy. A bare header line is only a weak hint.
         for index, line in enumerate(lines):
             if seller_labels.match(line):
                 inline = seller_labels.sub("", line, count=1).strip(" :#-")
@@ -488,6 +503,7 @@ class InvoiceParser:
                     if re.search(r"[A-Za-z]", clean) and len(clean) >= 2:
                         if not customer_name or clean.casefold() != customer_name.casefold():
                             seller_name = clean[:255]
+                            seller_confidence = 0.92
                             break
                 if seller_name:
                     break
@@ -509,6 +525,7 @@ class InvoiceParser:
                 ):
                     if not customer_name or clean.casefold() != customer_name.casefold():
                         seller_name = clean[:255]
+                        seller_confidence = 0.5
                         break
 
         # Locate seller GSTIN distinct from customer GSTIN
@@ -519,7 +536,7 @@ class InvoiceParser:
                     seller_gstin = candidate_gstin
                     break
 
-        return seller_name, seller_gstin
+        return seller_name, seller_gstin, seller_confidence
 
     @classmethod
     def _extract_tax_breakdown(cls, text: str) -> tuple[Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]:

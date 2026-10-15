@@ -1601,6 +1601,18 @@ class TestHistoricalWorkspace(unittest.TestCase):
         ).json()
         self.assertFalse(any(c["id"] == str(cid) for c in hist_list_after))
 
+        # A paid current invoice must not put the customer back on the historical list.
+        self.client.post(
+            f"/invoices/{current_inv_id}/payments",
+            json={"payment_date": "2026-06-02", "amount": 1000},
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        )
+        paid_list = self.client.get(
+            "/historical/companies",
+            headers={"Authorization": f"Bearer {self.token_a}"},
+        ).json()
+        self.assertFalse(any(c["id"] == str(cid) for c in paid_list))
+
         # 8. Verify operational invoice is still visible in /invoices register
         op_list = self.client.get(
             "/invoices",

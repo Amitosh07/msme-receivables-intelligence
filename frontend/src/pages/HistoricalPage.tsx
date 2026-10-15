@@ -16,7 +16,8 @@ import {
 import { StatusBadge } from "../components/Badges";
 import { historicalApi, normaliseError } from "../lib/api";
 import { date, invoiceLabel, money } from "../lib/format";
-import { notifyDataChanged } from "../lib/events";
+import { notifyDataChanged, onDataChanged } from "../lib/events";
+import { subscribeProcessing, watchInvoiceProcessing } from "../lib/processing";
 import { todayISO } from "../lib/aging";
 import { sumMoney } from "../lib/totals";
 import type {
@@ -24,6 +25,7 @@ import type {
   HistoricalCompanySummary,
   HistoricalInvoiceItem,
   HistoricalReviewInvoice,
+  InvoiceUpload,
   PaymentImport,
 } from "../lib/types";
 
@@ -31,7 +33,7 @@ export function HistoricalPage() {
   const { companyId } = useParams<{ companyId?: string }>();
 
   if (companyId) {
-    return <HistoricalCompanyDetailView companyId={companyId} />;
+    return <HistoricalCompanyDetailView key={companyId} companyId={companyId} />;
   }
 
   return <HistoricalCompanyListView />;
@@ -51,6 +53,7 @@ function HistoricalCompanyListView() {
   const [showUploadInvoiceModal, setShowUploadInvoiceModal] = useState(false);
   const [reviews, setReviews] = useState<HistoricalReviewInvoice[]>([]);
   const [selectedReview, setSelectedReview] = useState<HistoricalReviewInvoice | null>(null);
+  const [processingMessage, setProcessingMessage] = useState("");
   const navigate = useNavigate();
 
   // Debounce search query
@@ -61,9 +64,11 @@ function HistoricalCompanyListView() {
     return () => clearTimeout(timer);
   }, [search]);
 
-  const loadCompanies = useCallback(async (query: string) => {
-    setLoading(true);
-    setError(null);
+  const loadCompanies = useCallback(async (query: string, silent = false) => {
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const [data, totalsData, reviewData] = await Promise.all([
         historicalApi.listCompanies(query || undefined),
@@ -73,16 +78,36 @@ function HistoricalCompanyListView() {
       setCompanies(data);
       setAllCompanies(totalsData);
       setReviews(reviewData);
+      setError(null);
     } catch (err) {
-      setError(normaliseError(err).message);
+      if (!silent) setError(normaliseError(err).message);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void loadCompanies(debouncedSearch);
   }, [debouncedSearch, loadCompanies]);
+
+  useEffect(() => onDataChanged(() => { void loadCompanies(debouncedSearch, true); }), [debouncedSearch, loadCompanies]);
+
+  useEffect(() => subscribeProcessing((update) => {
+    if (update.origin !== "HISTORICAL") return;
+    if (update.state === "queued" || update.state === "processing") {
+      setProcessingMessage(`Processing ${update.filename}…`);
+      return;
+    }
+    if (update.registered) {
+      setProcessingMessage(`${update.filename} processed. Historical records are up to date.`);
+      return;
+    }
+    const seller = update.identity?.seller_name;
+    const buyer = update.identity?.buyer_name;
+    const parties = [seller ? `Seller: ${seller}` : "", buyer ? `Buyer: ${buyer}` : ""].filter(Boolean).join(" · ");
+    const reason = update.identity?.review_reason || update.errorMessage || "The invoice was not registered.";
+    setProcessingMessage(parties ? `${reason} ${parties}` : reason);
+  }), []);
 
   // Aggregate metrics
   const stats = useMemo(() => {
@@ -112,6 +137,7 @@ function HistoricalCompanyListView() {
           </button>
         </div>
       </section>
+      {processingMessage && <p className="upload-message" role="status">{processingMessage}</p>}
 
       {/* Metric Cards */}
       <div className="metric-grid">
@@ -151,7 +177,11 @@ function HistoricalCompanyListView() {
           </div>
           {reviews.map((invoice) => (
             <div key={invoice.id} className="historical-search-row">
-              <span>{invoice.invoice_number || "Invoice number not extracted"} · {invoice.currency ? money(invoice.amount, invoice.currency) : invoice.amount.toLocaleString()}</span>
+              <span>
+                {invoice.invoice_number || "Invoice number not extracted"} · {invoice.currency ? money(invoice.amount, invoice.currency) : invoice.amount.toLocaleString()}
+                {invoice.buyer_name ? ` · Buyer: ${invoice.buyer_name}` : ""}
+                {invoice.seller_name ? ` · Seller: ${invoice.seller_name}` : ""}
+              </span>
               <button className="button" onClick={() => setSelectedReview(invoice)}>Complete review</button>
             </div>
           ))}
@@ -291,10 +321,10 @@ function HistoricalCompanyListView() {
       {showUploadInvoiceModal && (
         <UploadHistoricalInvoiceModal
           onClose={() => setShowUploadInvoiceModal(false)}
-          onSuccess={() => {
+          onSuccess={(upload) => {
             setShowUploadInvoiceModal(false);
-            notifyDataChanged();
-            void loadCompanies("");
+            watchInvoiceProcessing(upload);
+            setProcessingMessage(`Processing ${upload.original_filename}…`);
           }}
         />
       )}
@@ -383,7 +413,7 @@ function HistoricalCompanyReviewModal({
   onSuccess: () => void;
 }) {
   const [customerId, setCustomerId] = useState(invoice.customer_id || "");
-  const [companyName, setCompanyName] = useState("");
+  const [companyName, setCompanyName] = useState(invoice.buyer_name || invoice.unresolved_customer_name || "");
   const [gstin, setGstin] = useState("");
   const [dueDate, setDueDate] = useState(invoice.due_date || "");
   const [saving, setSaving] = useState(false);
@@ -415,6 +445,11 @@ function HistoricalCompanyReviewModal({
         </div>
         <form onSubmit={submit}>
           <div className="modal-body">
+            <p className="modal-text">
+              {invoice.seller_name ? <>Seller: <strong>{invoice.seller_name}</strong>. </> : null}
+              {invoice.buyer_name ? <>Buyer: <strong>{invoice.buyer_name}</strong>. </> : null}
+              {invoice.review_reason || "Confirm the company before this invoice is saved against a customer."}
+            </p>
             {needsCompany && <>
               <div className="form-field">
                 <label htmlFor="review-company">Existing Company</label>
@@ -462,6 +497,7 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [processingMessage, setProcessingMessage] = useState("");
 
   const handleDeleteCompany = async () => {
     setDeleting(true);
@@ -476,22 +512,44 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
     }
   };
 
-  const loadDetail = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  const loadDetail = useCallback(async (silent = false) => {
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const data = await historicalApi.getCompany(companyId);
       setDetail(data);
+      setError(null);
     } catch (err) {
-      setError(normaliseError(err).message);
+      if (!silent) setError(normaliseError(err).message);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [companyId]);
 
   useEffect(() => {
     void loadDetail();
   }, [loadDetail]);
+
+  useEffect(() => onDataChanged(() => { void loadDetail(true); }), [loadDetail]);
+
+  useEffect(() => subscribeProcessing((update) => {
+    if (update.origin !== "HISTORICAL") return;
+    if (update.state === "queued" || update.state === "processing") {
+      setProcessingMessage(`Processing ${update.filename}…`);
+      return;
+    }
+    if (update.registered) {
+      setProcessingMessage(`${update.filename} processed.`);
+      return;
+    }
+    const seller = update.identity?.seller_name;
+    const buyer = update.identity?.buyer_name;
+    const parties = [seller ? `Seller: ${seller}` : "", buyer ? `Buyer: ${buyer}` : ""].filter(Boolean).join(" · ");
+    const reason = update.identity?.review_reason || update.errorMessage || "The invoice was not added to this company.";
+    setProcessingMessage(parties ? `${reason} ${parties}` : reason);
+  }), []);
 
   const openPaymentModalFor = (invoice: HistoricalInvoiceItem) => {
     setSelectedInvoice(invoice);
@@ -533,6 +591,7 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
         <ArrowLeft size={16} /> Back to historical companies
       </Link>
 
+      {processingMessage && <p className="upload-message" role="status">{processingMessage}</p>}
       <section className="historical-topbar">
         <div className="historical-identity">
           <p className="eyebrow">Historical payment record</p>
@@ -711,10 +770,10 @@ function HistoricalCompanyDetailView({ companyId }: { companyId: string }) {
           companyId={companyId}
           companyName={detail.display_name}
           onClose={() => setShowUploadInvoiceModal(false)}
-          onSuccess={() => {
+          onSuccess={(upload) => {
             setShowUploadInvoiceModal(false);
-            notifyDataChanged();
-            void loadDetail();
+            watchInvoiceProcessing(upload);
+            setProcessingMessage(`Processing ${upload.original_filename}. It will appear here only if it matches ${detail.display_name}.`);
           }}
         />
       )}
@@ -1078,7 +1137,7 @@ function UploadHistoricalInvoiceModal({
   companyId?: string;
   companyName?: string;
   onClose: () => void;
-  onSuccess: () => void;
+  onSuccess: (upload: InvoiceUpload) => void;
 }) {
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -1103,9 +1162,10 @@ function UploadHistoricalInvoiceModal({
     setUploading(true);
     setError(null);
     try {
-      if (companyId) await historicalApi.uploadInvoice(companyId, file);
-      else await historicalApi.uploadUnassignedInvoice(file);
-      onSuccess();
+      const uploaded = companyId
+        ? await historicalApi.uploadInvoice(companyId, file)
+        : await historicalApi.uploadUnassignedInvoice(file);
+      onSuccess(uploaded);
     } catch (err) {
       setError(normaliseError(err).message);
       setUploading(false);
@@ -1125,8 +1185,8 @@ function UploadHistoricalInvoiceModal({
         <form onSubmit={handleUpload}>
           <div className="modal-body">
             <p className="modal-text">
-              {companyName ? <>Upload an invoice PDF explicitly bound to <strong>{companyName}</strong>.</> : <>Upload an invoice PDF for automatic company discovery.</>}{" "}
-              The document origin is recorded as <code>HISTORICAL</code> and will be parsed asynchronously.
+              {companyName ? <>The invoice is checked against <strong>{companyName}</strong>. It is saved here only when the buyer on the document matches this company.</> : <>The buyer is taken from the document. A different company is not attached to the first company on file.</>}{" "}
+              Parsing continues after this window closes, and the lists update when it finishes.
             </p>
 
             <div className="form-field">

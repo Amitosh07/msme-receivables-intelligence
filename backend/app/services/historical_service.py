@@ -234,16 +234,9 @@ def list_historical_companies(
         )
     )
 
-    paid_current_subq = (
-        select(Invoice.customer_id)
-        .join(Payment, Payment.invoice_id == Invoice.id)
-        .where(
-            Invoice.business_id == business_id,
-            Invoice.customer_id.isnot(None),
-        )
-    )
-
-    eligible_subq = hist_invoice_subq.union(hist_payment_subq, paid_current_subq)
+    # A payment on a current invoice is operational receivables, not historical
+    # membership. Including it kept a deleted company on this list.
+    eligible_subq = hist_invoice_subq.union(hist_payment_subq)
 
     query = select(Customer).where(
         Customer.business_id == business_id,
@@ -274,14 +267,7 @@ def list_historical_companies(
                 select(Invoice).where(
                     Invoice.business_id == business_id,
                     Invoice.customer_id == cust.id,
-                    or_(
-                        Invoice.origin == InvoiceOrigin.HISTORICAL.value,
-                        Invoice.id.in_(
-                            select(Payment.invoice_id).where(
-                                Payment.business_id == business_id
-                            )
-                        ),
-                    ),
+                    Invoice.origin == InvoiceOrigin.HISTORICAL.value,
                 )
             ).all()
         )
@@ -360,12 +346,14 @@ def get_historical_company_detail(
             select(Invoice.id).where(
                 Invoice.business_id == business_id,
                 Invoice.customer_id == customer_id,
-                or_(
-                    Invoice.origin == InvoiceOrigin.HISTORICAL.value,
-                    Invoice.id.in_(
-                        select(Payment.invoice_id).where(Payment.business_id == business_id)
-                    ),
-                ),
+                Invoice.origin == InvoiceOrigin.HISTORICAL.value,
+            ).limit(1)
+        ) is not None
+        or db.scalar(
+            select(Payment.id).where(
+                Payment.business_id == business_id,
+                Payment.customer_identity_key == f"customer:{customer_id}",
+                Payment.provenance.in_(["legacy", "import"]),
             ).limit(1)
         ) is not None
     )
@@ -378,12 +366,7 @@ def get_historical_company_detail(
             .where(
                 Invoice.business_id == business_id,
                 Invoice.customer_id == customer_id,
-                or_(
-                    Invoice.origin == InvoiceOrigin.HISTORICAL.value,
-                    Invoice.id.in_(
-                        select(Payment.invoice_id).where(Payment.business_id == business_id)
-                    ),
-                ),
+                Invoice.origin == InvoiceOrigin.HISTORICAL.value,
             )
             .order_by(Invoice.invoice_date.desc(), Invoice.created_at.desc())
         ).all()
@@ -457,8 +440,9 @@ def upload_historical_company_invoice(
     original_filename: str,
 ) -> tuple[InvoiceDocument, Task]:
     """
-    Upload a historical invoice document bound authoritatively to the given customer workspace.
-    Explicitly tags origin='HISTORICAL' and enqueues parsing task with customer_id context.
+    Upload a historical invoice for one company workspace.
+    The company id is a candidate association. Parsing still checks it against
+    the extracted buyer and will not save a conflicting identity.
     """
     customer = db.scalar(
         select(Customer).where(

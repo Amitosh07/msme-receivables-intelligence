@@ -126,6 +126,7 @@ def load_outstanding_invoices(db: Session, business_id: uuid.UUID) -> list[Outst
             .where(
                 Invoice.business_id == business_id,
                 Invoice.origin == InvoiceOrigin.CURRENT.value,
+                Invoice.processing_status == "PROCESSED",
                 Invoice.payment_status.in_(OUTSTANDING_STATUSES),
             )
         ).all()
@@ -158,6 +159,7 @@ def build_dashboard_summary(
         .where(
             Invoice.business_id == business_id,
             Invoice.origin == InvoiceOrigin.CURRENT.value,
+            Invoice.processing_status == "PROCESSED",
         )
     ) or 0
 

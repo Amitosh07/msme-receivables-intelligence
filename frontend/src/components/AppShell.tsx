@@ -2,6 +2,7 @@ import { LayoutDashboard, ReceiptText, Upload, CalendarClock, LogOut, Menu, Spar
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useState } from "react";
 import { useAuth } from "../features/auth";
+import { useProcessingWatcher } from "../hooks/useProcessingWatcher";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { ThemeToggle } from "./ThemeToggle";
 const links = [
@@ -14,6 +15,7 @@ const links = [
 ];
 export function AppShell() {
   const { user, logout } = useAuth();
+  useProcessingWatcher();
   const [open, setOpen] = useState(false);
   const location = useLocation();
   const matched = links.find((link) => link.to === location.pathname);

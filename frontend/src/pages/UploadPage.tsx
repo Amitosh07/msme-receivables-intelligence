@@ -5,11 +5,23 @@ import { invoicesApi, normaliseError } from "../lib/api";
 import type { InvoiceDocument } from "../lib/types";
 import { StatusBadge } from "../components/Badges";
 import { date } from "../lib/format";
-import { notifyDataChanged } from "../lib/events";
+import { subscribeProcessing, watchInvoiceProcessing, type ProcessingUpdate } from "../lib/processing";
 
-type UploadStatus = "idle" | "uploading" | "success" | "error";
-const ACTIVE = new Set(["PENDING", "PROCESSING"]);
-const POLL_LIMIT_MS = 120_000;
+type UploadStatus = "idle" | "uploading" | "processing" | "success" | "error";
+
+function describeProcessing(update: ProcessingUpdate): { status: UploadStatus; message: string } {
+  if (update.state === "queued" || update.state === "processing") {
+    return { status: "processing", message: `Processing ${update.filename}…` };
+  }
+  if (update.registered) {
+    return { status: "success", message: "Invoice processed. Overview, invoices and customers are up to date." };
+  }
+  const seller = update.identity?.seller_name;
+  const buyer = update.identity?.buyer_name;
+  const parties = [seller ? `Seller: ${seller}` : "", buyer ? `Buyer: ${buyer}` : ""].filter(Boolean).join(" · ");
+  const reason = update.identity?.review_reason || update.errorMessage || "Processing failed. The invoice was not registered.";
+  return { status: "error", message: parties ? `${reason} ${parties}` : reason };
+}
 
 export function UploadPage() {
   const [invoiceFile, setInvoiceFile] = useState<File>();
@@ -17,41 +29,31 @@ export function UploadPage() {
   const [invoiceMessage, setInvoiceMessage] = useState("");
   const [documents, setDocuments] = useState<InvoiceDocument[]>([]);
   const [documentError, setDocumentError] = useState("");
-  const [pollGeneration, setPollGeneration] = useState(0);
-  const previousStatuses = useRef(new Map<string, string>());
+  const activeTask = useRef<string | null>(null);
 
   const loadDocs = useCallback(async () => {
     const next = await invoicesApi.documents();
-    const completed = next.some((doc) => {
-      const before = previousStatuses.current.get(doc.id);
-      return before && ACTIVE.has(before) && !ACTIVE.has(doc.processing_status);
-    });
-    previousStatuses.current = new Map(next.map((doc) => [doc.id, doc.processing_status]));
     setDocuments(next);
     setDocumentError("");
-    if (completed) notifyDataChanged();
     return next;
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    let timer: number | undefined;
-    const started = Date.now();
-    const poll = async () => {
-      try {
-        const docs = await loadDocs();
-        if (!cancelled && docs.some((doc) => ACTIVE.has(doc.processing_status)) && Date.now() - started < POLL_LIMIT_MS) {
-          timer = window.setTimeout(poll, 3000);
-        }
-      } catch (error) {
-        if (cancelled) return;
-        setDocumentError(normaliseError(error).message);
-        if (Date.now() - started < POLL_LIMIT_MS) timer = window.setTimeout(poll, 8000);
-      }
-    };
-    void poll();
-    return () => { cancelled = true; if (timer) window.clearTimeout(timer); };
-  }, [loadDocs, pollGeneration]);
+    void loadDocs().catch((error) => {
+      if (!cancelled) setDocumentError(normaliseError(error).message);
+    });
+    return () => { cancelled = true; };
+  }, [loadDocs]);
+
+  useEffect(() => subscribeProcessing((update) => {
+    if (update.origin !== "CURRENT") return;
+    if (activeTask.current && update.taskId !== activeTask.current) return;
+    const next = describeProcessing(update);
+    setInvoiceStatus(next.status);
+    setInvoiceMessage(next.message);
+    void loadDocs().catch((error) => setDocumentError(normaliseError(error).message));
+  }), [loadDocs]);
 
   const pickInvoice = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -69,11 +71,13 @@ export function UploadPage() {
     setInvoiceStatus("uploading");
     setInvoiceMessage("");
     try {
-      await invoicesApi.upload(invoiceFile);
-      setInvoiceStatus("success");
-      setInvoiceMessage("Uploaded. Processing will update automatically below.");
+      const uploaded = await invoicesApi.upload(invoiceFile);
+      activeTask.current = uploaded.task_id ?? null;
+      watchInvoiceProcessing({ ...uploaded, origin: uploaded.origin || "CURRENT" });
+      setInvoiceStatus("processing");
+      setInvoiceMessage("File received. Reading the invoice…");
       setInvoiceFile(undefined);
-      setPollGeneration((value) => value + 1);
+      void loadDocs();
     } catch (error) {
       setInvoiceStatus("error");
       setInvoiceMessage(normaliseError(error).message);
@@ -102,7 +106,7 @@ export function UploadPage() {
         </label>
         {invoiceMessage && <UploadMessage status={invoiceStatus} message={invoiceMessage} />}
         <button className="button primary full" onClick={sendInvoice} disabled={!invoiceFile || invoiceStatus === "uploading"}>
-          {invoiceStatus === "uploading" ? "Uploading…" : "Upload invoice"}
+          {invoiceStatus === "uploading" ? "Uploading…" : invoiceStatus === "processing" ? "Processing…" : "Upload invoice"}
         </button>
       </UploadCard>
     </div>
@@ -111,7 +115,7 @@ export function UploadPage() {
         <div>
           <h2>Recent document processing</h2>
         </div>
-        <button className="text-button" onClick={() => { void loadDocs(); setPollGeneration((value) => value + 1); }}>Refresh</button>
+        <button className="text-button" onClick={() => { void loadDocs().catch((error) => setDocumentError(normaliseError(error).message)); }}>Refresh</button>
       </div>
       {documentError && <p className="error-text" role="alert">{documentError}</p>}
       {documents.length ? (
